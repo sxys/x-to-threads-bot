@@ -290,9 +290,21 @@ def main():
     parser = argparse.ArgumentParser(description="Threads 自动定时均匀发布机器人")
     parser.add_argument("--status", action="store_true", help="查看当前待发队列详情与进度")
     parser.add_argument("--post-now", action="store_true", help="立即发布队列中的第一个待发任务进行实测")
+    parser.add_argument("--test", type=str, help="直接发布自定义测试文案到 Threads（无需依赖队列）")
     parser.add_argument("--reschedule", action="store_true", help="将当前所有待发布的任务按今日剩余时间均匀重新排布")
     parser.add_argument("--interval", type=int, default=35, help="两次发帖之间的最小安全冷却时间（分钟，默认 35）")
     args = parser.parse_args()
+
+    if args.test:
+        text = args.test.strip()
+        print(f"🚀 正在测试直接发布单条文案到 Threads: {text}")
+        pub = ThreadsPublisher(headless=True)
+        res = asyncio.run(pub.post_thread(text))
+        if res:
+            print("✅ 恭喜！测试帖子已成功在 Threads 上线！请前往个人主页确认。")
+        else:
+            print("❌ 发布失败，请查看日志排查。")
+        return
 
     if args.status:
         print_queue_status()
