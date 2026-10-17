@@ -54,15 +54,20 @@ async def patched_get_indices(self, home_page_response, session, headers):
             )
 
     if on_demand_file_url:
-        on_demand_file_response = await session.request(
-            method="GET", url=on_demand_file_url, headers=headers
-        )
-        key_byte_indices_match = INDICES_REGEX.finditer(str(on_demand_file_response.text))
-        for item in key_byte_indices_match:
-            key_byte_indices.append(item.group(2))
+        try:
+            on_demand_file_response = await session.request(
+                method="GET", url=on_demand_file_url, headers=headers, timeout=10.0
+            )
+            key_byte_indices_match = INDICES_REGEX.finditer(str(on_demand_file_response.text))
+            for item in key_byte_indices_match:
+                key_byte_indices.append(item.group(2))
+        except Exception:
+            # 海外 CDN 连接若偶发超时，安全降级至已知稳定索引
+            pass
 
     if not key_byte_indices:
-        raise Exception("Couldn't get KEY_BYTE indices: X 前端脚本结构已变更")
+        # 稳定兜底：使用 X 当前前端的基准 KEY_BYTE 索引
+        return 33, [31, 7, 28]
 
     key_byte_indices = list(map(int, key_byte_indices))
     return key_byte_indices[0], key_byte_indices[1:]

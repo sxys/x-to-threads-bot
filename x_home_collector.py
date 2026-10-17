@@ -2,6 +2,7 @@ import os
 import re
 import asyncio
 import logging
+import httpx
 from typing import List, Dict, Any
 import twikit_patch
 twikit_patch.apply_patch()
@@ -16,6 +17,8 @@ class XHomeCollector:
     def __init__(self):
         proxy_url = config.PROXY if config.PROXY and config.PROXY.strip() else None
         self.client = Client(language='en-US', proxy=proxy_url)
+        # 调大网络超时阈值，防止在云服务器网络波动或 CDN 连接时超时（默认仅 5 秒过短）
+        self.client.http.timeout = httpx.Timeout(30.0, connect=15.0)
         self.cookie_file = config.COOKIE_FILE
 
     async def _login(self):
