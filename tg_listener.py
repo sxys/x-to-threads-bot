@@ -77,19 +77,35 @@ class TelegramListener:
             await self.send_reply(client, sender_chat, msg)
             return
 
-        # 2. 帮助提示
+        # 2. 清理媒体缓存快捷指令
+        if text.lower() in ("/clean", "/cleanup", "清理", "清缓存"):
+            result = QueueManager.cleanup_media_cache()
+            msg = (
+                f"🧹 <b>【媒体缓存清理完成】</b>\n"
+                f"────────────────────────\n"
+                f"已清理已发任务: <b>{result['cleaned_tasks_count']}</b> 个\n"
+                f"已清理历史目录: <b>{result['cleaned_dirs_count']}</b> 个\n"
+                f"共释放磁盘空间: <b>{result['mb_freed']:.2f} MB</b>\n"
+                f"────────────────────────\n"
+                f"🎉 VPS 磁盘空间已成功瘦身！"
+            )
+            await self.send_reply(client, sender_chat, msg)
+            return
+
+        # 3. 帮助提示
         if text.lower() in ("/help", "/start", "帮助"):
             help_msg = (
                 f"👋 <b>您好！我是您的 X & Threads 助手</b>\n\n"
                 f"💡 <b>使用方式</b>：\n"
                 f"直接向我发送任何 <b>X (Twitter) 帖子链接</b>，我将立即自动抓取文案、高清图片或视频，"
                 f"并以<b>最高优先级插队</b>安排在下一个发帖窗口发布到 Threads，后续任务自动顺延！\n\n"
-                f"🔹 发送 <code>/status</code> 或 <code>状态</code> 可随时查看排期进度。"
+                f"🔹 发送 <code>/status</code> 或 <code>状态</code> 可随时查看排期进度。\n"
+                f"🔹 发送 <code>/clean</code> 或 <code>清理</code> 可随时清理已发推文的图片和视频缓存，释放 VPS 硬盘空间。"
             )
             await self.send_reply(client, sender_chat, help_msg)
             return
 
-        # 3. 匹配 X/Twitter 链接进行优先插队处理
+        # 4. 匹配 X/Twitter 链接进行优先插队处理
         match = TWEET_URL_REGEX.search(text)
         if not match:
             # 不是链接也不是指令，忽略其他普通杂项消息

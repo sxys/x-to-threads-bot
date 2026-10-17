@@ -251,6 +251,8 @@ async def run_worker(min_interval_minutes: int = 40):
         logger.info("⚠️ 检测到队列中存在早于当前时间的待发任务（中途启动或积压），正在重新均匀规划今日剩余时间段...")
         QueueManager.reschedule_pending_tasks()
 
+    last_cleanup_dt = datetime.now()
+
     while True:
         try:
             now_dt = datetime.now()
@@ -279,10 +281,17 @@ async def run_worker(min_interval_minutes: int = 40):
 
                 if success:
                     QueueManager.update_task_status(task["id"], "published")
-                    logger.info(f"✅ 任务 #{task['index']} 发布成功并已更新队列状态！")
+                    # 即发即清：发帖成功立即删除该任务的图片与视频文件，释放 VPS 磁盘
+                    freed = QueueManager.delete_task_media(task["id"], task.get("media_files", []))
+                    logger.info(f"✅ 任务 #{task['index']} 发布成功！已更新状态并清理本地媒体缓存 (释放 {freed/1024/1024:.2f} MB)。")
                 else:
                     QueueManager.update_task_status(task["id"], "failed", error="发布异常")
                     logger.warning(f"❌ 任务 #{task['index']} 发布失败。")
+
+            # 3. 每 6 小时自动执行一次全局媒体缓存清理，彻底杜绝孤立文件积压
+            if (now_dt - last_cleanup_dt).total_seconds() > 6 * 3600:
+                QueueManager.cleanup_media_cache()
+                last_cleanup_dt = now_dt
 
             # 每 60 秒检查一次队列
             await asyncio.sleep(60)
@@ -299,11 +308,18 @@ def main():
     parser = argparse.ArgumentParser(description="Threads 自动定时均匀发布机器人")
     parser.add_argument("--status", action="store_true", help="查看当前待发队列详情与进度")
     parser.add_argument("--post-now", action="store_true", help="立即发布队列中的第一个待发任务进行实测")
+    parser.add_argument("--clean-media", action="store_true", help="全面清理所有已发任务与历史孤立的多媒体文件，释放 VPS 磁盘空间")
     parser.add_argument("--test", type=str, help="直接发布自定义测试文案到 Threads（无需依赖队列）")
     parser.add_argument("--add-tweet", type=str, help="手动传入一个 X 推文链接或 ID，以最高优先级插队排期")
     parser.add_argument("--reschedule", action="store_true", help="启动时先强制重新平摊排布待发任务，再进入 24 小时常驻监听服务")
     parser.add_argument("--interval", type=int, default=40, help="两次发帖之间的最小安全冷却时间（分钟，默认 40）")
     args = parser.parse_args()
+
+    if args.clean_media:
+        logger.info("正在执行本地媒体缓存清理...")
+        result = QueueManager.cleanup_media_cache()
+        print(f"✅ 媒体缓存清理完成！已清理 {result['cleaned_tasks_count']} 个已发任务和 {result['cleaned_dirs_count']} 个历史目录，共释放 {result['mb_freed']:.2f} MB 磁盘空间。")
+        return
 
     if args.add_tweet:
         import re
@@ -366,7 +382,8 @@ def main():
         res = asyncio.run(pub.post_thread(target["text"], target["media_files"]))
         if res:
             QueueManager.update_task_status(target["id"], "published")
-            print("✅ 立即发布成功！已在 Threads 上线！")
+            freed = QueueManager.delete_task_media(target["id"], target.get("media_files", []))
+            print(f"✅ 立即发布成功！已在 Threads 上线并清理本地媒体缓存 (释放 {freed/1024/1024:.2f} MB)！")
         else:
             print("❌ 发布失败，请查看日志。")
         return

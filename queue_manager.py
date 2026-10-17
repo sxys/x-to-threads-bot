@@ -97,6 +97,9 @@ class QueueManager:
         if count == 0:
             return QUEUE_FILE
 
+        # 1. 构建新队列前，自动清理历史与已发布的媒体文件，保障磁盘空间充足
+        cls.cleanup_media_cache()
+
         times = cls.generate_schedule_times(count, duration_hours=24.0)
         queue_items = []
 
@@ -240,6 +243,96 @@ class QueueManager:
                     item["error"] = error
                 break
         cls.save_queue(queue)
+
+    @classmethod
+    def delete_task_media(cls, task_id: str, media_files: list = None) -> int:
+        """
+        删除单个已发布任务的本地缓存文件及对应目录，立即回收磁盘空间
+        """
+        import shutil
+        freed_bytes = 0
+        try:
+            # 1. 尝试删除 media_files 列表中记录的具体文件
+            if media_files:
+                for fpath in media_files:
+                    if fpath and os.path.exists(fpath):
+                        try:
+                            freed_bytes += os.path.getsize(fpath)
+                            os.remove(fpath)
+                        except Exception as e:
+                            logger.warning(f"删除媒体文件 {fpath} 异常: {e}")
+
+            # 2. 检查并删除以该推文 ID 命名的目录（media_cache/<task_id>）
+            tweet_dir = os.path.join(MEDIA_CACHE_DIR, str(task_id))
+            if os.path.exists(tweet_dir):
+                for root, _, files in os.walk(tweet_dir):
+                    for file in files:
+                        p = os.path.join(root, file)
+                        try:
+                            if os.path.exists(p):
+                                freed_bytes += os.path.getsize(p)
+                        except Exception:
+                            pass
+                shutil.rmtree(tweet_dir, ignore_errors=True)
+        except Exception as e:
+            logger.error(f"清理任务 #{task_id} 媒体缓存失败: {e}")
+        return freed_bytes
+
+    @classmethod
+    def cleanup_media_cache(cls, clean_orphans: bool = True) -> Dict[str, Any]:
+        """
+        全面清理本地媒体缓存以节省磁盘空间：
+        1. 清理所有状态为 'published' 的已发布帖子的媒体文件
+        2. 清理 media_cache 目录下不属于任何活跃任务（'pending' / 'failed'）的孤立推文目录（如昨日遗留历史文件）
+        """
+        import shutil
+
+        queue = cls.load_queue()
+        active_ids = set(str(item["id"]) for item in queue if item.get("status") in ("pending", "failed"))
+
+        freed_bytes = 0
+        cleaned_tasks_count = 0
+        cleaned_dirs_count = 0
+
+        # 1. 清理已发布的任务
+        for item in queue:
+            if item.get("status") == "published":
+                task_id = str(item.get("id"))
+                files = item.get("media_files") or []
+                b = cls.delete_task_media(task_id, files)
+                if b > 0:
+                    freed_bytes += b
+                    cleaned_tasks_count += 1
+                item["media_files"] = []
+
+        cls.save_queue(queue)
+
+        # 2. 清理孤立目录（不在当前活跃任务中的全部历史目录）
+        if clean_orphans and os.path.exists(MEDIA_CACHE_DIR):
+            for entry in os.listdir(MEDIA_CACHE_DIR):
+                entry_path = os.path.join(MEDIA_CACHE_DIR, entry)
+                if os.path.isdir(entry_path):
+                    if entry not in active_ids:
+                        dir_bytes = 0
+                        for root, _, files in os.walk(entry_path):
+                            for f in files:
+                                try:
+                                    dir_bytes += os.path.getsize(os.path.join(root, f))
+                                except Exception:
+                                    pass
+                        shutil.rmtree(entry_path, ignore_errors=True)
+                        freed_bytes += dir_bytes
+                        cleaned_dirs_count += 1
+
+        mb_freed = freed_bytes / (1024 * 1024)
+        if freed_bytes > 0:
+            logger.info(f"🧹 媒体缓存清理完毕！共清理 {cleaned_tasks_count} 个已发任务和 {cleaned_dirs_count} 个历史目录，释放空间: {mb_freed:.2f} MB")
+        return {
+            "freed_bytes": freed_bytes,
+            "mb_freed": mb_freed,
+            "cleaned_tasks_count": cleaned_tasks_count,
+            "cleaned_dirs_count": cleaned_dirs_count
+        }
 
     @classmethod
     async def insert_priority_task(cls, tweet, tweet_id: str) -> Dict[str, Any]:
