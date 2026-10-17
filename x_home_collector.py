@@ -1,8 +1,10 @@
 import os
 import re
+import json
 import asyncio
 import logging
 import httpx
+from datetime import datetime, timedelta
 from typing import List, Dict, Any
 import twikit_patch
 twikit_patch.apply_patch()
@@ -12,6 +14,9 @@ from x_config import config
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("XHomeCollector")
+
+HISTORY_FILE = "history_tweets.json"
+HISTORY_RETENTION_DAYS = 14  # 历史推文去重保留天数，保证14天内绝不重复抓取相同的热门推文
 
 class XHomeCollector:
     def __init__(self):
@@ -130,15 +135,115 @@ class XHomeCollector:
 
         return False
 
+    @staticmethod
+    def _normalize_text_fingerprint(text: str) -> str:
+        """生成推文核心文案指纹，去除 URL、标点及空格，用于内容级查重"""
+        if not text:
+            return ""
+        cleaned = re.sub(r'https?://\S+', '', text)
+        cleaned = re.sub(r'[\s\W_]+', '', cleaned)
+        return cleaned[:50]
+
+    def _load_history(self) -> Dict[str, Any]:
+        """读取历史抓取记录并自动剔除超过 14 天的过期条目"""
+        history = {"ids": {}, "fingerprints": {}}
+        now = datetime.now()
+
+        if os.path.exists(HISTORY_FILE):
+            try:
+                with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                    raw = json.load(f)
+                    if isinstance(raw, dict):
+                        raw_ids = raw.get("ids", {})
+                        raw_fps = raw.get("fingerprints", {})
+
+                        for tid, ts_str in raw_ids.items():
+                            try:
+                                dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                                if (now - dt).days <= HISTORY_RETENTION_DAYS:
+                                    history["ids"][str(tid)] = ts_str
+                            except Exception:
+                                history["ids"][str(tid)] = ts_str
+
+                        for fp, ts_str in raw_fps.items():
+                            try:
+                                dt = datetime.strptime(ts_str, "%Y-%m-%d %H:%M:%S")
+                                if (now - dt).days <= HISTORY_RETENTION_DAYS:
+                                    history["fingerprints"][fp] = ts_str
+                            except Exception:
+                                history["fingerprints"][fp] = ts_str
+            except Exception as e:
+                logger.warning(f"读取历史推文记录失败 ({e})，将重置历史库。")
+
+        # 兜底：若本地已有现存的 threads_queue.json，将其中已有的推文也纳入历史去重库
+        if os.path.exists("threads_queue.json"):
+            try:
+                with open("threads_queue.json", "r", encoding="utf-8") as f:
+                    queue_data = json.load(f)
+                    for item in queue_data:
+                        tid = str(item.get("id", ""))
+                        if tid and tid not in history["ids"]:
+                            history["ids"][tid] = now.strftime("%Y-%m-%d %H:%M:%S")
+                        fp = self._normalize_text_fingerprint(item.get("text", ""))
+                        if len(fp) >= 8 and fp not in history["fingerprints"]:
+                            history["fingerprints"][fp] = now.strftime("%Y-%m-%d %H:%M:%S")
+            except Exception:
+                pass
+
+        logger.info(f"历史推文去重库已加载 (已收录近 14 天 {len(history['ids'])} 条历史推文，绝不重复抓取)")
+        return history
+
+    def _is_duplicate_tweet(self, tweet, history: Dict[str, Any]) -> bool:
+        """检查推文是否在近 14 天内已被抓取过（包含 ID 查重、转推原贴查重及文案指纹查重）"""
+        # 1. 检查当前推文 ID
+        tid = str(getattr(tweet, "id", "") or "")
+        if tid and tid in history["ids"]:
+            return True
+
+        # 2. 若是转推，检查被转推的原贴 ID
+        retweeted = getattr(tweet, "retweeted_tweet", None)
+        if retweeted:
+            orig_id = str(getattr(retweeted, "id", "") or "")
+            if orig_id and orig_id in history["ids"]:
+                return True
+
+        # 3. 检查文案核心指纹（防止同一事件被换号洗稿转发）
+        text = getattr(tweet, "text", "") or ""
+        fp = self._normalize_text_fingerprint(text)
+        if len(fp) >= 8 and fp in history["fingerprints"]:
+            return True
+
+        return False
+
+    def _save_history(self, new_top_tweets: List[Dict[str, Any]], history: Dict[str, Any]):
+        """将今日选出的 Top 推文持久化追加至历史去重库"""
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for item in new_top_tweets:
+            tid = str(item["id"])
+            history["ids"][tid] = now_str
+            fp = self._normalize_text_fingerprint(item.get("text", ""))
+            if len(fp) >= 8:
+                history["fingerprints"][fp] = now_str
+
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+            logger.info(f"历史推文去重库已更新持久化至 {HISTORY_FILE} (当前历史库总量: {len(history['ids'])} 条)")
+        except Exception as e:
+            logger.error(f"保存历史推文记录失败: {e}")
+
     async def _fetch_home_top_tweets_async(self) -> List[Dict[str, Any]]:
-        """异步拉取主页推文并进行严格的中文与免广告过滤与热度排序"""
+        """异步拉取主页推文并进行严格的中文、免广告、去重过滤与热度排序"""
         await self._login()
 
+        # 加载历史推文去重库
+        history = self._load_history()
+
         timeline_type = config.TIMELINE_TYPE.lower()
-        max_pages = max(config.FETCH_PAGES, 8)  # 至少支持翻 8 页以防过滤外文后候选不足
+        max_pages = max(config.FETCH_PAGES, 10)  # 适当增加翻页次数，确保排除历史重复推文后候选池依然充足
         target_candidates = config.TOP_LIMIT * 2  # 收集到 40 条原生中文候选即可提前停止
 
-        logger.info(f"开始抓取主页流 (类型: {timeline_type})，严格筛选原生中文且跳过广告帖子...")
+        logger.info(f"开始抓取主页流 (类型: {timeline_type})，严格去重、筛选原生中文且跳过广告帖子...")
 
         # 首次拉取
         if timeline_type == "following":
@@ -148,11 +253,12 @@ class XHomeCollector:
 
         all_tweets = []
         seen_ids = set()
+        duplicate_filtered_count = 0
         filtered_count = 0
         ad_filtered_count = 0
 
         def process_batch(tweets_batch):
-            nonlocal all_tweets, seen_ids, filtered_count, ad_filtered_count
+            nonlocal all_tweets, seen_ids, duplicate_filtered_count, filtered_count, ad_filtered_count
             if not tweets_batch:
                 return
             for tweet in tweets_batch:
@@ -160,6 +266,11 @@ class XHomeCollector:
                 if not tweet_id or tweet_id in seen_ids:
                     continue
                 seen_ids.add(tweet_id)
+
+                # 排除历史已发送过的重复推文（近 14 天严格去重）
+                if self._is_duplicate_tweet(tweet, history):
+                    duplicate_filtered_count += 1
+                    continue
 
                 # 排除广告推广（官方投放广告 + 商业软广）
                 if self.is_ad_tweet(tweet):
@@ -193,7 +304,7 @@ class XHomeCollector:
                 })
 
         process_batch(result)
-        logger.info(f"第 1 页抓取完成，当前符合要求的中文帖子: {len(all_tweets)} (已过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count})")
+        logger.info(f"第 1 页抓取完成，当前符合要求的全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count})")
 
         # 异步翻页收集更多中文帖子
         for page in range(2, max_pages + 1):
@@ -208,7 +319,7 @@ class XHomeCollector:
                     logger.info("无更多主页数据，停止翻页。")
                     break
                 process_batch(result)
-                logger.info(f"第 {page} 页抓取完成，累计中文帖子: {len(all_tweets)} (已过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count})")
+                logger.info(f"第 {page} 页抓取完成，累计全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count})")
             except Exception as e:
                 logger.warning(f"第 {page} 页翻页抓取出现异常 ({e})，停止翻页。")
                 break
@@ -222,6 +333,9 @@ class XHomeCollector:
         top_list = all_tweets[:config.TOP_LIMIT]
 
         logger.info(f"排序完成！已选出热度前 {len(top_list)} 条纯中文帖子（最高热度分: {top_list[0]['score']}）。")
+
+        # 持久化保存今日入选的 Top 推文至历史去重库
+        self._save_history(top_list, history)
 
         # 自动生成 Threads 待发队列并下载本地多媒体资源
         try:

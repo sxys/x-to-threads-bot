@@ -13,6 +13,7 @@ x_cookies.json
 cookies.json
 threads_cookies.json
 threads_queue.json
+history_tweets.json
 media_cache/
 *.pem
 
