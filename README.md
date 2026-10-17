@@ -1,142 +1,194 @@
-# 资产价格监听与 Telegram 预警机器人
+# X (Twitter) 热门推文抓取 ➔ Telegram 推送 ➔ Threads 24小时自动同步系统
 
-一个轻量、稳定且功能完善的 Python 程序，用于实时监听**美股**和**加密货币**价格，并在价格突破或跌破你设定的范围时，自动通过 Telegram 机器人发送提醒消息。
+一个工业级、高可靠的自动化社交媒体矩阵管理系统：每天自动从 **X (Twitter)** 登录主页抓取最高热度的 **Top 20 原生中文推文**，排版后推送到 **Telegram 频道/个人**，并自动下载文字、高清图片、全分辨率 MP4 视频，全天 **24 小时按约 70 分钟均匀间隔** 自动发布到您的 **Threads** 账号。
 
 ---
 
 ## 🌟 核心特性
 
-1. **多资产支持**：
-   - **美股**：基于 Yahoo Finance，支持美股任意主流代码（如 `AAPL`, `TSLA`, `NVDA`, `MSFT` 等）。
-   - **加密货币**：内置多源容灾（OKX、Binance、Binance.US、Coinbase、Yahoo Finance），自动切换最稳定行情源，支持主流币种（如 `BTC`, `ETH`, `SOL`, `DOGE` 等）。
-2. **范围预警**：
-   - 支持设置下限（`min_price`）与上限（`max_price`）。
-   - 跌破下限时发出 📉 警报，突破上限时发出 🚀 警报。
-   - 自动计算偏离金额与偏离百分比。
-3. **防刷屏机制（报警冷却）**：
-   - 避免价格持续破位时每分钟轰炸群聊，支持自定义冷却时间（如 30 分钟）。
-   - 当价格回归正常区间后自动重置状态，下次再次破位时立即响应。
-4. **内置辅助工具**：
-   - `--test-tg`：一键测试机器人连通性与权限。
-   - `--get-chat-id`：快速自动查询你与机器人的 Chat ID。
-   - 完整支持 HTTP/SOCKS5 代理配置（适合国内网络直连 Telegram）。
+1. **X (Twitter) 热门推文精准抓取**：
+   - 登录主页推荐流（`For You`）或关注流（`Following`），多轮滚动翻页聚合候选池。
+   - 综合点赞、转推、评论、引用加权评分，截取最热门的 Top 20。
+   - **严格语言清洗**：内置双重正规中文检测，坚决剔除西班牙语、葡萄牙语等被机翻成中文的推文。
+   - **广告与营销过滤**：自动拦截跳过官方 Promoted 广告推文与营销赞助内容。
+2. **Telegram 优美卡片推送**：
+   - 自动生成结构清晰的 HTML 消息卡片，包含发布者、文案摘要、热度指标（赞/转/评）及原推直达链接。
+   - 智能分包推送，避免单条消息过长触发 Telegram API 限制；静默异常处理，抓取失败时不骚扰群聊。
+3. **Threads 24 小时全天候自动平摊发布**：
+   - 自动解析推文多媒体，下载完整 MP4 高清视频流与原图到本地缓存。
+   - **全天 24 小时平摊排期**：20 条推文在 24 小时内（直到次日早晨 08:00）均匀分布，平均每隔约 **70~72 分钟** 发布一条，附带 $\pm 3$ 分钟随机抖动，完全模拟真人节奏。
+   - **发帖防抖冷却保护（Cool-down Guard）**：两次发帖之间强制保证至少 40 分钟安全间隔，杜绝平台风控。
+   - **断线自适应平摊（Smart Reschedule）**：无论是中途启动还是服务器维护，启动时自动根据剩余时间重新均匀排布，绝不堆积连发。
+4. **轻量低消耗**：
+   - 深度优化 Linux VPS 资源，配备专用内存防崩参数与 Swap 自动构建，即便在 **1核 / 1GB RAM** 的低配云服务器上也能极稳运行。
 
 ---
 
 ## 📁 项目结构
 
 ```text
-testGravity/
-├── config.yaml          # 核心配置文件（配置 Bot Token、监听资产及预警区间）
-├── monitor.py           # 程序主入口（包含轮询循环、报警判断与命令行功能）
-├── price_fetcher.py     # 行情获取模块（美股与加密货币数据源）
-├── notifier.py          # Telegram 消息推送与辅助模块
-├── requirements.txt     # Python 依赖清单
-└── README.md            # 项目说明文档
+x-to-threads-bot/
+├── x_top_bot.py           # 【程序一】X 抓取与 TG 每日推送入口
+├── x_home_collector.py    # X 信息流采集器（热度计算、中文过滤与广告拦截）
+├── twikit_patch.py        # X Webpack chunk 适配、容错补丁与索引兜底
+├── tg_sender.py           # Telegram 消息卡片排版与分发模块
+├── queue_manager.py       # 媒体资源下载器、24小时排期生成与队列管理器
+├── threads_poster.py      # 【程序二】Threads 自动化发帖核心（基于 Playwright）
+├── setup_vps.sh           # Ubuntu 24.04 VPS 一键极速部署脚本
+├── requirements.txt       # Python 依赖清单
+├── .env.example           # 环境变量与账号凭据模板
+├── .gitignore             # 严格的敏感信息过滤规则（防止 Token 泄露）
+└── README.md              # 项目完整使用手册
 ```
 
 ---
 
-## 🚀 快速上手
+## 🛠️ 常用命令速查手册（运维必看 📋）
 
-### 1. 安装依赖
+在服务器或本地终端中（进入项目目录并执行 `source .venv/bin/activate` 后）：
 
-确保已安装 Python 3.9+，在项目目录下执行：
+### 1. 查看队列与发帖进度
+| 操作 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **查看当前全部队列** | `python threads_poster.py --status` | 查看当天 20 条推文的时间表、状态（`[已发]` / `[待发]`）及文案预览 |
+| **仅查看未发布的帖子** | `python threads_poster.py --status \| grep 待发` | 快速过滤出接下来尚未发布的推文列表 |
+| **查看已发布的帖子** | `python threads_poster.py --status \| grep 已发` | 快速过滤已成功发布的推文 |
 
+### 2. 即时测试与调试命令
+| 操作 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **立即抓取推文并推送到 TG** | `python x_top_bot.py --run-now` | 手动触发单次完整抓取、热度筛选、TG 推送并生成 Threads 待发队列 |
+| **测试 Telegram 连通性** | `python x_top_bot.py --test-tg` | 仅测试 TG Bot Token 和 Chat ID 是否有效 |
+| **测试 Threads 直接发单条** | `python threads_poster.py --test "测试文本"` | 无需依赖队列，直接向 Threads 发布一条自定义文本，快速验证 Cookie 与浏览器环境 |
+| **测试发布队列下一条** | `python threads_poster.py --post-now` | 立即提取队列中的下一个待发任务（含图文/视频）发布至 Threads |
+| **手动平摊重排队列** | `python threads_poster.py --reschedule` | 将当前所有剩余待发任务按未来 24 小时均匀重新排布并启动监听 |
+
+### 3. 定时抓取任务管理（Crontab，每天早上 08:00）
+| 操作 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **编辑定时任务配置** | `crontab -e` | 打开系统定时任务编辑器 |
+| **查看已安装的定时任务** | `crontab -l` | 查看当前正在生效的 cron 清单 |
+| **查看抓取执行历史日志** | `cat x_bot_daily.log` 或 `tail -n 50 x_bot_daily.log` | 查看每天早上 08:00 任务的抓取与推送日志 |
+
+### 4. Threads 常驻后台服务管理（Systemd）
+| 操作 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **查看发帖服务实时状态** | `sudo systemctl status threads-poster` | 查看服务是否处于 active (running) |
+| **实时滚动查看发帖日志** | `journalctl -u threads-poster -f` | 实时查看浏览器启动、媒体上传、Post 点击与发布完成日志 |
+| **重启发布服务** | `sudo systemctl restart threads-poster` | 更新代码或 Cookie 后重启生效 |
+| **停止发布服务** | `sudo systemctl stop threads-poster` | 暂停后台自动发帖 |
+| **启动发布服务** | `sudo systemctl start threads-poster` | 启动后台自动发帖 |
+
+---
+
+## 🚀 生产环境（Ubuntu 24.04 VPS）从零部署指南
+
+### 第一步：克隆代码与一键环境配置
 ```bash
-pip install -r requirements.txt
+# 1. 克隆代码仓库
+git clone https://github.com/sxys/x-to-threads-bot.git
+cd x-to-threads-bot
+
+# 2. 运行一键配置脚本 (自动创建 4GB Swap、安装 Python 虚拟环境与 Playwright Chromium)
+chmod +x setup_vps.sh
+./setup_vps.sh
 ```
 
-*(本项目依赖已预先为你安装完成：`yfinance`, `pyyaml`, `requests`)*
-
----
-
-### 2. 配置 Telegram 机器人
-
-#### 第一步：获取 Bot Token
-1. 在 Telegram 中搜索并打开 `@BotFather`。
-2. 发送 `/newbot`，按照指引给机器人起一个名称和用户名。
-3. 创建成功后，BotFather 会给你一段 `HTTP API Token`（类似 `7123456789:AAFl...`）。
-
-#### 第二步：获取你的 Chat ID
-1. 在 Telegram 中搜索打开你刚才创建的机器人，点击 **Start**（或给它发送一条任意消息，如 `hello`）。
-2. 打开项目下的 [config.yaml](file:///d:/abel/testGravity/config.yaml)，先将你的 `bot_token` 填入。
-3. 在终端运行以下命令，程序会自动从最近消息中读取你的 `chat_id`：
+### 第二步：配置账号与凭据
+1. **配置环境变量**：
    ```bash
-   python monitor.py --get-chat-id
+   cp .env.example .env
+   nano .env
    ```
-4. 将终端输出的 Chat ID 填入 [config.yaml](file:///d:/abel/testGravity/config.yaml) 中的 `chat_id`。
+   填入你的凭据：
+   - `TG_BOT_TOKEN`: Telegram 机器人 Token
+   - `TG_CHAT_ID`: Telegram 接收人 Chat ID
+   - `X_AUTH_TOKEN` & `X_CT0`: 从浏览器获取的 X Cookie
+   - `PROXY=`: **海外 VPS 请保持等号右侧留空！**（无需代理）
+   *(按 `Ctrl + O` 回车保存，`Ctrl + X` 退出)*
 
-*(如果你的网络环境需要梯子才能访问 Telegram，请在 `config.yaml` 中配置代理，如 `proxy: "http://127.0.0.1:7890"`)*
+2. **配置 Threads Cookies**：
+   在项目根目录下创建 `threads_cookies.json`：
+   ```bash
+   nano threads_cookies.json
+   ```
+   将导出的 Threads JSON 格式 Cookies 完整粘贴进去并保存。
 
----
-
-### 3. 测试 Telegram 连接
-
-配置好 Token 和 Chat ID 后，运行测试命令：
-
+### 第三步：校准服务器时区为北京时间（重要 ⚠️）
 ```bash
-python monitor.py --test-tg
+sudo timedatectl set-timezone Asia/Shanghai
+date  # 确认显示 CST 且时间与北京时间完全一致
 ```
 
-如果配置无误，你的 Telegram 会立即收到一条机器人的测试消息。
+### 第四步：设置每天早上 08:00 自动抓取定时任务
+```bash
+crontab -e
+```
+在文件末尾添加以下一行：
+```cron
+0 8 * * * /var/www/x-to-threads-bot/.venv/bin/python /var/www/x-to-threads-bot/x_top_bot.py --run-now >> /var/www/x-to-threads-bot/x_bot_daily.log 2>&1
+```
+
+### 第五步：注册 Threads 24小时后台自动发帖系统服务
+一键创建 Systemd 服务并开启开机自启：
+```bash
+# 1. 写入服务配置文件
+sudo bash -c 'cat > /etc/systemd/system/threads-poster.service << "EOF"
+[Unit]
+Description=Threads Auto Poster 24H Worker Service
+After=network.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/var/www/x-to-threads-bot
+ExecStart=/var/www/x-to-threads-bot/.venv/bin/python threads_poster.py --reschedule
+Restart=always
+RestartSec=15
+Environment=PYTHONUNBUFFERED=1
+
+[Install]
+WantedBy=multi-user.target
+EOF'
+
+# 2. 重载并启动服务
+sudo systemctl daemon-reload
+sudo systemctl enable --now threads-poster
+
+# 3. 检查服务运行状态
+sudo systemctl status threads-poster
+```
 
 ---
 
-### 4. 自定义监控标的与预警区间
+## 💻 本地 Windows 运行指南
 
-打开 [config.yaml](file:///d:/abel/testGravity/config.yaml)，根据需求添加或修改：
-
-```yaml
-# 1. 美股列表
-stocks:
-  - symbol: "AAPL"
-    name: "苹果 (Apple)"
-    min_price: 220.0     # 低于 220 美元触发跌破预警
-    max_price: 250.0     # 高于 250 美元触发突破预警
-
-  - symbol: "TSLA"
-    name: "特斯拉 (Tesla)"
-    min_price: 220.0
-    max_price: 280.0
-
-# 2. 加密货币列表
-cryptos:
-  - symbol: "BTC"
-    name: "比特币 (Bitcoin)"
-    min_price: 75000.0   # 低于 75000 USDT 报警
-    max_price: 90000.0   # 高于 90000 USDT 报警
-
-  - symbol: "ETH"
-    name: "以太坊 (Ethereum)"
-    min_price: 2300.0
-    max_price: 2800.0
-```
+1. **环境准备**：
+   ```powershell
+   python -m venv .venv
+   .\.venv\Scripts\Activate.ps1
+   pip install -r requirements.txt
+   playwright install chromium
+   ```
+2. **复制配置**：
+   复制 `.env.example` 为 `.env`，并在 `PROXY=` 中填写本地科学上网代理端口（如 `http://127.0.0.1:7890`）。
+3. **注册 Windows 每日定时任务**（每天早上 08:00 自动唤起抓取）：
+   ```powershell
+   powershell -ExecutionPolicy Bypass -File .\register_daily_task.ps1
+   ```
+4. **启动 Threads 自动发布**：
+   双击运行根目录下的 `start_threads_worker.bat`，或执行：
+   ```powershell
+   python threads_poster.py
+   ```
 
 ---
 
-### 5. 启动监控程序
+## ❓ 常见问题排查 (FAQ)
 
-- **单次检查测试（不进入死循环，打印当前所有标的价格与状态）**：
-  ```bash
-  python monitor.py --once
-  ```
-
-- **正式启动常驻监控**：
-  ```bash
-  python monitor.py
-  ```
-
-程序启动后，会按照 `config.yaml` 中的 `check_interval_seconds` 定时轮询价格，并在控制台实时输出监控日志。一旦超出指定区间，立即发送如下样式的 Telegram 预警卡片：
-
-```text
-⚠️ 【价格超出范围预警】
-
-🏷️ 标的名称: 苹果 (Apple) (AAPL)
-💰 最新价格: $334.84
-📊 监控区间: 220.0 ~ 250.0
-🚨 预警状态: 🚀 突破价格上限
-📈 偏离幅度: 高于上限 +$84.84 (+33.94%)
-📡 行情源: YahooFinance
-⏰ 预警时间: 2026-10-07 21:55:00
-```
+- **Q1: 为什么抓取推文时提示 `ConnectTimeout`？**
+  - 海外 VPS 直连 X 时不需要代理，请确保 `.env` 中的 `PROXY=` 等号右边完全留空。
+- **Q2: 为什么 1GB 内存服务器不会崩溃？**
+  - 系统已配置 4GB Swap 虚拟内存，且 Playwright 启动时携带了 `--disable-dev-shm-usage` 和 `--disable-gpu` 内存保护参数，发帖后会自动释放 Chromium 进程。
+- **Q3: 遇到服务器维护关机，重启后推文会连续狂发吗？**
+  - 绝对不会！程序内置了启动自检平摊算法与发帖冷却防抖机制（`Cool-down Guard`），重启后会自动根据剩余时间重新将未发推文均匀排布，且两次发帖强制间隔 40 分钟以上。
