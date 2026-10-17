@@ -22,23 +22,23 @@ class QueueManager:
         return cleaned
 
     @staticmethod
-    def generate_schedule_times(count: int, start_hour: int = 8, end_hour: int = 23) -> List[str]:
+    def generate_schedule_times(count: int, start_dt: datetime = None, duration_hours: float = 24.0) -> List[str]:
         """
-        在当天 start_hour ~ end_hour (08:00~23:00) 之间生成均匀分布的计划时间
-        带 ±3 分钟的随机抖动，防平台频控
+        全天 24 小时均匀分布发帖时间表：
+        从 start_dt 开始（默认当前时刻），在接下来的 24 小时（1440 分钟）内均匀分布。
+        20 条推文平均间隔约 70~72 分钟，并附加 ±3 分钟的随机抖动，完全模拟真人发帖规律。
         """
-        today = datetime.now().date()
-        start_dt = datetime(today.year, today.month, today.day, start_hour, 0, 0)
-        total_minutes = (end_hour - start_hour) * 60  # 15 * 60 = 900 分钟
+        if start_dt is None:
+            start_dt = datetime.now()
 
-        usable_minutes = total_minutes - 40
-        step = usable_minutes / max(count - 1, 1)
+        total_minutes = int(duration_hours * 60)  # 24 * 60 = 1440 分钟
+        step = (total_minutes - 30) / max(count, 1)
 
         times = []
         for i in range(count):
             jitter = random.randint(-3, 3)
-            minute_offset = 15 + int(i * step) + jitter
-            minute_offset = max(5, min(total_minutes - 10, minute_offset))
+            minute_offset = 10 + int(i * step) + jitter
+            minute_offset = max(3, min(total_minutes - 5, minute_offset))
             target_time = start_dt + timedelta(minutes=minute_offset)
             times.append(target_time.strftime("%Y-%m-%d %H:%M:%S"))
         return times
@@ -97,7 +97,7 @@ class QueueManager:
         if count == 0:
             return QUEUE_FILE
 
-        times = cls.generate_schedule_times(count, start_hour=8, end_hour=23)
+        times = cls.generate_schedule_times(count, duration_hours=24.0)
         queue_items = []
 
         logger.info(f"正在为 {count} 条热门帖子下载媒体资源并生成发布队列...")
@@ -179,11 +179,11 @@ class QueueManager:
         return None
 
     @classmethod
-    def reschedule_pending_tasks(cls, start_dt: datetime = None, end_hour: int = 23):
+    def reschedule_pending_tasks(cls, start_dt: datetime = None, target_end_dt: datetime = None):
         """
-        对当前队列中所有尚未发布的任务进行平摊重排。
-        如果当前时间已经晚于早上 08:00，则从当前时间（+2分钟）开始，一直到今天 23:00，
-        将剩余待发任务按均匀时间间隔重新排布，避免中途启动时积压连发。
+        对当前队列中所有尚未发布的任务进行平摊重排：
+        将剩余待发任务按均匀时间间隔重新排布至下一个 24 小时周期（或次日早上 08:00），
+        避免中途启动或暂停后积压连发。
         """
         queue = cls.load_queue()
         pending_indices = [i for i, item in enumerate(queue) if item.get("status") == "pending"]
@@ -192,17 +192,20 @@ class QueueManager:
 
         now = datetime.now()
         if start_dt is None:
-            # 默认从当前时间后 2 分钟开始排
             start_dt = now + timedelta(minutes=2)
 
-        today = now.date()
-        end_dt = datetime(today.year, today.month, today.day, end_hour, 0, 0)
+        if target_end_dt is None:
+            # 默认目标结束时间为下一次抓取的时间（次日早上 08:00）
+            today_8am = datetime(now.year, now.month, now.day, 8, 0, 0)
+            if now < today_8am:
+                next_cycle = today_8am
+            else:
+                next_cycle = today_8am + timedelta(days=1)
+            # 保证平均每个任务至少有 30 分钟间隔
+            min_end = start_dt + timedelta(minutes=max(len(pending_indices) * 45, 120))
+            target_end_dt = max(next_cycle, min_end)
 
-        if start_dt >= end_dt:
-            logger.warning("当前时间已超过今日计划结束时间 23:00，暂不执行自动重排。")
-            return queue
-
-        remaining_minutes = (end_dt - start_dt).total_seconds() / 60
+        remaining_minutes = (target_end_dt - start_dt).total_seconds() / 60
         count = len(pending_indices)
 
         if count == 1:
@@ -210,14 +213,14 @@ class QueueManager:
         else:
             step = remaining_minutes / max(count - 1, 1)
 
-        logger.info(f"正在对剩余 {count} 条待发任务进行平摊重排（剩余可用时间: {remaining_minutes:.0f} 分钟，平均间隔: {step:.1f} 分钟）...")
+        logger.info(f"正在对剩余 {count} 条待发任务进行 24 小时均匀平摊重排（可用时间: {remaining_minutes/60:.1f} 小时，平均间隔: {step:.1f} 分钟）...")
 
         for rank, q_idx in enumerate(pending_indices):
             offset = int(rank * step)
-            jitter = random.randint(-2, 2) if step >= 10 else 0
+            jitter = random.randint(-3, 3) if step >= 15 else 0
             task_time = start_dt + timedelta(minutes=max(0, offset + jitter))
-            if task_time > end_dt:
-                task_time = end_dt
+            if task_time > target_end_dt:
+                task_time = target_end_dt
             queue[q_idx]["scheduled_time"] = task_time.strftime("%Y-%m-%d %H:%M:%S")
 
         cls.save_queue(queue)

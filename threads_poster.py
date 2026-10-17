@@ -223,15 +223,15 @@ def print_queue_status():
     print(f"总计: {len(queue)} 条 | 已发布: {published_count} 条 | 待发布: {pending_count} 条\n")
 
 
-async def run_worker(min_interval_minutes: int = 35):
+async def run_worker(min_interval_minutes: int = 40):
     """
-    后台轮询调度服务：每天 08:00 ~ 23:00 自动检查并均匀分发队列
+    后台轮询调度服务：全天 24 小时自动检查并均匀分发队列
     集成两大安全防护机制：
-    1. 启动自检与平摊重排：检测到中途启动或积压过期任务时，自动按剩余时间重排至 23:00
+    1. 启动自检与平摊重排：检测到中途启动或积压过期任务时，自动按剩余时间均匀重新排布
     2. 严格的冷却防抖保护：强制两次发帖之间至少间隔 min_interval_minutes 分钟，绝不连发
     """
     logger.info("🚀 Threads 自动发布服务已启动！正在监控队列...")
-    logger.info(f"每天将在 08:00 ~ 23:00 时间段内发布，发帖冷却保护设置为: 至少间隔 {min_interval_minutes} 分钟。")
+    logger.info(f"全天 24 小时均匀分发（平均每隔约 70 分钟发布一条），发帖冷却保护设置为: 至少间隔 {min_interval_minutes} 分钟。")
     publisher = ThreadsPublisher(headless=True)
 
     # 启动自检：如果存在任何计划时间早于当前时间的待发任务，立即在今日剩余时间内均匀重排
