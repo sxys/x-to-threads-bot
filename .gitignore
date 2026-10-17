@@ -1,0 +1,54 @@
+# ==================== Python 虚拟环境 ====================
+.venv/
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# ==================== 敏感配置与 Cookie 凭据 ====================
+# 切勿将真实密码、Token 和账号 Cookie 上传到代码仓库
+.env
+x_cookies.json
+cookies.json
+threads_cookies.json
+threads_queue.json
+media_cache/
+*.pem
+
+# ==================== Python 编译缓存 ====================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ==================== 日志与临时文件 ====================
+*.log
+*.sqlite3
+*.png
+test_text_post.py
+
+# ==================== IDE 与 编辑器配置 ====================
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

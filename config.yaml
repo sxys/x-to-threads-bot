@@ -1,0 +1,69 @@
+# ==========================================
+# 价格预警机器人配置文件
+# ==========================================
+
+telegram:
+  # 必填：你的 Telegram Bot Token (从 @BotFather 获取)
+  # 示例: "1234567890:ABCdefGHIjklMNOpqrsTUVwxyz"
+  bot_token: "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+
+  # 必填：接收消息的 Telegram 用户或群组 Chat ID
+  # 示例: "123456789"
+  # 提示: 如果不知道自己的 Chat ID，可以先启动机器人，在 Telegram 发送 /start，
+  # 然后运行: python monitor.py --get-chat-id 自动获取
+  chat_id: "YOUR_TELEGRAM_CHAT_ID_HERE"
+
+  # 可选：网络代理 (国内用户如无法直连 Telegram，请在此填写本地代理端口)
+  # 常见格式: "http://127.0.0.1:7890" 或 "socks5://127.0.0.1:7890"
+  proxy: ""
+
+settings:
+  # 检查行情间隔（单位：秒，建议 30 ~ 300）
+  check_interval_seconds: 60
+
+  # 报警冷却时间（单位：分钟）
+  # 当某资产价格持续超出范围时，在该时间内不会重复轰炸发消息
+  # 若设置为 0，则每次检查如果依然超标都会发送通知
+  alert_cooldown_minutes: 30
+
+# ==========================================
+# 监听标的列表及预警价格范围
+# ==========================================
+# 规则说明：
+# - min_price: 价格下限（低于该价格时触发跌破警报）
+# - max_price: 价格上限（高于该价格时触发突破警报）
+# - 如仅需单边预警，可将不关心的字段留空或删除
+
+# 1. 美股列表 (使用美股标准代码，如 AAPL, TSLA, NVDA, MSFT 等)
+stocks:
+  - symbol: "AAPL"
+    name: "苹果 (Apple)"
+    min_price: 220.0
+    max_price: 250.0
+
+  - symbol: "TSLA"
+    name: "特斯拉 (Tesla)"
+    min_price: 220.0
+    max_price: 280.0
+
+  - symbol: "NVDA"
+    name: "英伟达 (NVIDIA)"
+    min_price: 110.0
+    max_price: 150.0
+
+# 2. 加密货币列表 (支持常用币种符号，如 BTC, ETH, SOL, DOGE 等)
+cryptos:
+  - symbol: "BTC"
+    name: "比特币 (Bitcoin)"
+    min_price: 75000.0
+    max_price: 90000.0
+
+  - symbol: "ETH"
+    name: "以太坊 (Ethereum)"
+    min_price: 2300.0
+    max_price: 2800.0
+
+  - symbol: "SOL"
+    name: "索拉纳 (Solana)"
+    min_price: 100.0
+    max_price: 150.0
