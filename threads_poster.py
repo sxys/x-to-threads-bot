@@ -234,6 +234,15 @@ async def run_worker(min_interval_minutes: int = 40):
     logger.info(f"全天 24 小时均匀分发（平均每隔约 70 分钟发布一条），发帖冷却保护设置为: 至少间隔 {min_interval_minutes} 分钟。")
     publisher = ThreadsPublisher(headless=True)
 
+    # 启动 Telegram 双向互动监听（支持在 Telegram 发送 X 链接以最高优先级插队发帖）
+    try:
+        from tg_listener import TelegramListener
+        tg_listener = TelegramListener()
+        asyncio.create_task(tg_listener.run_listener())
+        logger.info("🤖 Telegram 双向互动监听器已成功挂载！可在 Telegram 直接发 X 链接插队。")
+    except Exception as e:
+        logger.warning(f"Telegram 互动监听服务挂载失败: {e}")
+
     # 启动自检：如果存在任何计划时间早于当前时间的待发任务，立即在今日剩余时间内均匀重排
     now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
     queue = QueueManager.load_queue()
@@ -291,9 +300,38 @@ def main():
     parser.add_argument("--status", action="store_true", help="查看当前待发队列详情与进度")
     parser.add_argument("--post-now", action="store_true", help="立即发布队列中的第一个待发任务进行实测")
     parser.add_argument("--test", type=str, help="直接发布自定义测试文案到 Threads（无需依赖队列）")
+    parser.add_argument("--add-tweet", type=str, help="手动传入一个 X 推文链接或 ID，以最高优先级插队排期")
     parser.add_argument("--reschedule", action="store_true", help="启动时先强制重新平摊排布待发任务，再进入 24 小时常驻监听服务")
     parser.add_argument("--interval", type=int, default=40, help="两次发帖之间的最小安全冷却时间（分钟，默认 40）")
     args = parser.parse_args()
+
+    if args.add_tweet:
+        import re
+        from x_home_collector import XHomeCollector
+        raw = args.add_tweet.strip()
+        m = re.search(r'(\d{10,})', raw)
+        if not m:
+            print("❌ 无法从输入中提取有效的推文 ID，请输入形如 https://x.com/user/status/123456789 或纯数字 ID。")
+            return
+        tweet_id = m.group(1)
+        print(f"🚀 正在拉取推文 #{tweet_id} 并下载媒体附件...")
+
+        async def _do_add():
+            collector = XHomeCollector()
+            await collector._login()
+            tweet = await collector.client.get_tweet_by_id(tweet_id)
+            if not tweet:
+                print("❌ 获取推文失败，请确认推文 ID 正确且属于公开账号。")
+                return
+            res = await QueueManager.insert_priority_task(tweet, tweet_id)
+            if res.get("ok"):
+                print(f"✅ 成功插入最高优先级！排期在 #{res['item']['index']} (预计发布时刻: {res['scheduled_time']})")
+                print_queue_status()
+            else:
+                print(f"ℹ️ {res.get('message', '处理失败')}")
+
+        asyncio.run(_do_add())
+        return
 
     if args.test:
         text = args.test.strip()

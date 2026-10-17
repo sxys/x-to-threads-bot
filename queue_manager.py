@@ -240,3 +240,113 @@ class QueueManager:
                     item["error"] = error
                 break
         cls.save_queue(queue)
+
+    @classmethod
+    async def insert_priority_task(cls, tweet, tweet_id: str) -> Dict[str, Any]:
+        """
+        将用户手动分享的推文作为最高优先级插队任务：
+        1. 下载该推文的高清图片或 MP4 视频到本地媒体缓存
+        2. 按照选项 A 计算满足冷却安全时间（至少 40 分钟）的最早发布时刻
+        3. 插入到待发任务最前端（下一个就发它）
+        4. 顺延并平摊排布后续所有待发任务，保持 24 小时均匀分布，发完为止
+        5. 将该推文记录到历史去重库，防止日后重复抓取
+        """
+        tweet_id_str = str(tweet_id)
+        queue = cls.load_queue()
+
+        # 检查是否已发布
+        existing_item = next((i for i in queue if str(i.get("id")) == tweet_id_str), None)
+        if existing_item and existing_item.get("status") == "published":
+            return {
+                "ok": False,
+                "reason": "already_published",
+                "item": existing_item,
+                "message": f"该推文已于 {existing_item.get('published_at')} 成功发布过，无需重复提交。"
+            }
+
+        # 移除已有待发副本（避免重复排期）
+        queue = [i for i in queue if str(i.get("id")) != tweet_id_str]
+
+        # 1. 下载媒体资源
+        media_info = await cls.download_tweet_media(tweet, tweet_id_str)
+        cleaned_text = cls.clean_tweet_text(getattr(tweet, "full_text", "") or getattr(tweet, "text", ""))
+
+        # 2. 计算选项 A：下一个可发布的避峰安全时间窗口（发帖防抖冷却至少 40 分钟）
+        now = datetime.now()
+        last_pub = cls.get_last_published_time()
+        if last_pub:
+            elapsed_mins = (now - last_pub).total_seconds() / 60
+            safe_wait = max(2, int(40 - elapsed_mins))
+        else:
+            safe_wait = 2
+        priority_time = now + timedelta(minutes=safe_wait)
+
+        user = getattr(tweet, "user", None)
+        screen_name = getattr(user, "screen_name", "i") if user else "i"
+        user_name = getattr(user, "name", "Twitter User") if user else "Twitter User"
+
+        new_item = {
+            "index": 1,
+            "id": tweet_id_str,
+            "url": f"https://x.com/{screen_name}/status/{tweet_id_str}",
+            "author": f"{user_name} (@{screen_name})",
+            "text": cleaned_text,
+            "media_type": media_info["type"],
+            "media_files": media_info["files"],
+            "scheduled_time": priority_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "status": "pending",
+            "published_at": None,
+            "error": None,
+            "is_priority": True
+        }
+
+        # 3. 优先级插入队列：已发布任务 + [本次插队任务] + 后续其余待发任务
+        published_items = [i for i in queue if i.get("status") != "pending"]
+        other_pending = [i for i in queue if i.get("status") == "pending"]
+
+        # 后续待发任务从 priority_time + 40 分钟开始顺延平分至次日 08:00
+        if other_pending:
+            subsequent_start = priority_time + timedelta(minutes=40)
+            today_8am = datetime(now.year, now.month, now.day, 8, 0, 0)
+            next_cycle = today_8am if now < today_8am else today_8am + timedelta(days=1)
+            min_end = subsequent_start + timedelta(minutes=max(len(other_pending) * 45, 120))
+            target_end = max(next_cycle, min_end)
+
+            remaining_minutes = (target_end - subsequent_start).total_seconds() / 60
+            count = len(other_pending)
+            step = remaining_minutes / max(count, 1)
+
+            for rank, item in enumerate(other_pending):
+                offset = int(rank * step)
+                jitter = random.randint(-3, 3) if step >= 15 else 0
+                t_time = subsequent_start + timedelta(minutes=max(0, offset + jitter))
+                item["scheduled_time"] = t_time.strftime("%Y-%m-%d %H:%M:%S")
+
+        full_queue = published_items + [new_item] + other_pending
+        for idx, item in enumerate(full_queue):
+            item["index"] = idx + 1
+
+        cls.save_queue(full_queue)
+
+        # 4. 同步录入历史去重库
+        try:
+            from x_home_collector import XHomeCollector, HISTORY_FILE
+            collector = XHomeCollector()
+            history = collector._load_history()
+            history["ids"][tweet_id_str] = now.strftime("%Y-%m-%d %H:%M:%S")
+            fp = collector._normalize_text_fingerprint(cleaned_text)
+            if len(fp) >= 8:
+                history["fingerprints"][fp] = now.strftime("%Y-%m-%d %H:%M:%S")
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(history, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+        logger.info(f"✅ 优先级插队成功！任务已排期为 #{new_item['index']}，预计发布时间: {new_item['scheduled_time']}")
+        return {
+            "ok": True,
+            "item": new_item,
+            "scheduled_time": new_item["scheduled_time"],
+            "total_count": len(full_queue),
+            "pending_count": len(other_pending) + 1
+        }

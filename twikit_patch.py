@@ -171,10 +171,26 @@ async def patched_get_latest_timeline(self, count: int = 20, seen_tweet_ids: lis
     )
 
 
+async def patched_get_tweet_by_id(self, tweet_id: str, cursor: str | None = None):
+    """安全获取指定推文详情，兼容 2026 最新 X GraphQL 结构，避免 KeyError: itemContent"""
+    data, _ = await self.gql.tweet_detail(tweet_id, cursor)
+    entries = find_dict(data, 'entries')
+    if not entries:
+        return None
+    entries = entries[0]
+    for entry in entries:
+        if 'tweet-' in entry.get('entryId', ''):
+            tweet = tweet_from_data(self, entry)
+            if tweet:
+                return tweet
+    return None
+
+
 def apply_patch():
     """动态注入所有增强补丁"""
     transaction.ClientTransaction.get_indices = patched_get_indices
     twikit_user.User.__init__ = patched_user_init
     Client.get_timeline = patched_get_timeline
     Client.get_latest_timeline = patched_get_latest_timeline
-    logger.debug("Twikit patches (Transaction, User, Anti-Ad) applied.")
+    Client.get_tweet_by_id = patched_get_tweet_by_id
+    logger.debug("Twikit patches (Transaction, User, Anti-Ad, GetTweetById) applied.")
