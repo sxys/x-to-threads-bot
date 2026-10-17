@@ -291,8 +291,8 @@ def main():
     parser.add_argument("--status", action="store_true", help="查看当前待发队列详情与进度")
     parser.add_argument("--post-now", action="store_true", help="立即发布队列中的第一个待发任务进行实测")
     parser.add_argument("--test", type=str, help="直接发布自定义测试文案到 Threads（无需依赖队列）")
-    parser.add_argument("--reschedule", action="store_true", help="将当前所有待发布的任务按今日剩余时间均匀重新排布")
-    parser.add_argument("--interval", type=int, default=35, help="两次发帖之间的最小安全冷却时间（分钟，默认 35）")
+    parser.add_argument("--reschedule", action="store_true", help="启动时先强制重新平摊排布待发任务，再进入 24 小时常驻监听服务")
+    parser.add_argument("--interval", type=int, default=40, help="两次发帖之间的最小安全冷却时间（分钟，默认 40）")
     args = parser.parse_args()
 
     if args.test:
@@ -312,9 +312,9 @@ def main():
 
     if args.reschedule:
         QueueManager.reschedule_pending_tasks()
-        print("\n重排后的队列状态如下：")
+        print("\n已完成 24 小时平摊重排，队列计划如下：")
         print_queue_status()
-        return
+        logger.info("已完成重排，正在进入全天 24 小时自动发布常驻服务...")
 
     if args.post_now:
         queue = QueueManager.load_queue()
