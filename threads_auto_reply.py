@@ -247,52 +247,40 @@ class ThreadsAutoReplier:
                     logger.info(f"[{p_idx}/{len(post_links)}] 正在检查帖子: {post_url}")
                     summary["posts_checked"] += 1
 
-                    await page.goto(post_url, timeout=30000, wait_until="domcontentloaded")
-                    await page.wait_for_timeout(3000)
+                    await page.goto(post_url, timeout=35000, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(4000)
 
-                    # 提取该帖下的所有评论与作者信息
-                    comments_data = await page.evaluate("""(myUser) => {
-                        // 寻找主帖之后的所有回复容器
-                        // Threads 详情页每个独立评论通常为一个带有包含用户名的文章或容器
-                        const items = [];
-                        // 查找所有的回复块 (排除置顶的主帖)
-                        const allArticles = Array.from(document.querySelectorAll('div[data-pressable-container="true"], article, div[role="article"]'));
-
-                        // 如果没找到特定结构，通过用户名链接与文字结构分析
-                        const userLinks = Array.from(document.querySelectorAll('a[href^="/@"]'));
-                        return {
-                            pageTitle: document.title,
-                            articleCount: allArticles.length
-                        };
-                    }""", my_username)
-
-                    # 更稳定地从 DOM 中解析评论：
-                    # Threads post 页面中，主帖作者通常位于首部，后续每个评论有 Reply / 气泡 按钮
-                    comments = await page.evaluate("""(myUser) => {
+                    # 提取该帖下的所有真实粉丝评论
+                    comments = await page.evaluate("""({myUser, postUrl}) => {
+                        const mPost = postUrl.match(/\\/post\\/([A-Za-z0-9_-]+)/);
+                        const myPostId = mPost ? mPost[1] : '';
+                        const allPostLinks = Array.from(document.querySelectorAll('a[href*="/post/"]'));
                         const results = [];
-                        // 查找所有具备交互按钮或用户名的评论条目
-                        // 在 Threads 详情页中，主帖和每条回复都有对应的操作栏（赞、评论、转帖）
-                        const actionBars = Array.from(document.querySelectorAll('svg[aria-label="Reply"], svg[aria-label="回复"]'));
+                        const seenAuthors = new Set();
 
-                        // 第一个 Reply 通常是主帖的回复按钮，后面的对应各条评论
-                        actionBars.forEach((svg, idx) => {
-                            if (idx === 0) return; // 跳过主贴自身的回复按钮
+                        for (const a of allPostLinks) {
+                            const href = a.getAttribute('href') || '';
+                            if (myPostId && href.includes(myPostId)) continue; // 排除主帖自身的链接
 
-                            // 向上查找该评论的卡片容器
-                            let container = svg.closest('div[data-pressable-container="true"]') || svg.closest('article') || svg.closest('div[style*="flex"]');
-                            let author = "unknown";
-                            let text = "";
+                            const m = href.match(/^\\/@([A-Za-z0-9._]+)/);
+                            const author = m ? m[1] : 'unknown';
+                            if (author === myUser || author === 'unknown') continue;
+                            if (seenAuthors.has(author)) continue;
+                            seenAuthors.add(author);
 
-                            if (container) {
-                                const uLink = container.querySelector('a[href^="/@"]');
-                                if (uLink) {
-                                    const match = uLink.getAttribute('href').match(/^\\/@([A-Za-z0-9._]+)/);
-                                    if (match) author = match[1];
-                                }
-                                const spans = Array.from(container.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
-                                for (const sp of spans) {
-                                    const t = (sp.innerText || "").trim();
-                                    if (t && t !== author && !t.includes('小时') && !t.includes('天') && !t.includes('分钟')) {
+                            // 找到该评论卡片
+                            let card = a.closest('div[data-pressable-container="true"]') || a.parentElement;
+                            while (card && card.tagName !== 'BODY') {
+                                if (card.querySelectorAll('svg').length >= 3) break;
+                                card = card.parentElement;
+                            }
+
+                            let text = '';
+                            if (card) {
+                                const spans = Array.from(card.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
+                                for (const s of spans) {
+                                    const t = (s.innerText || '').trim();
+                                    if (t && t !== author && !t.includes('views') && !t.includes('Translate') && !t.match(/^\\d+[hdm]$/)) {
                                         text = t;
                                         break;
                                     }
@@ -300,16 +288,16 @@ class ThreadsAutoReplier:
                             }
 
                             results.push({
-                                index: idx,
-                                author: author,
-                                text: text
+                                author,
+                                text,
+                                href
                             });
-                        });
+                        }
                         return results;
-                    }""", my_username)
+                    }""", {"myUser": my_username, "postUrl": post_url})
 
                     total_comments_count = len(comments)
-                    logger.info(f"该帖子检测到评论数: {total_comments_count} 条")
+                    logger.info(f"该帖子检测到粉丝评论数: {total_comments_count} 条")
 
                     # 条件过滤：只在评论很少（1 ~ max_comments_threshold 条之间，默认 <= 10）时才进行回复
                     if total_comments_count == 0:
@@ -322,31 +310,26 @@ class ThreadsAutoReplier:
 
                     summary["posts_eligible"] += 1
 
-                    # 筛选出属于真实粉丝且尚未回复过的评论
+                    # 筛选出尚未回复过的粉丝评论
                     candidates = []
                     for c in comments:
                         c_author = c["author"]
                         c_text = c["text"]
-
-                        # 1. 绝对不回复博主自己
-                        if c_author == my_username or c_author == "unknown":
-                            continue
-
-                        # 2. 检查去重记录库
                         c_key = self._comment_key(post_url, c_author, c_text)
+
                         if c_key in replied_history:
                             logger.info(f"⏩ 评论已被回复过 (@{c_author}: '{c_text[:15]}...')，跳过。")
                             continue
 
                         candidates.append({
                             "key": c_key,
-                            "index": c["index"],
+                            "href": c["href"],
                             "author": c_author,
                             "text": c_text
                         })
 
                     if not candidates:
-                        logger.info("本帖所有现有粉丝评论均已回复过，跳过。")
+                        logger.info("本帖所有现有粉丝评论均已在历史库中回复过，跳过。")
                         continue
 
                     # 每个帖子只随机回复 1~2 个未回复的粉丝
@@ -359,43 +342,39 @@ class ThreadsAutoReplier:
                         logger.info(f"👉 准备回复 @{target['author']} ('{target['text'][:20]}...'): \"{chosen_phrase}\"")
 
                         if dry_run:
-                            logger.info(f"[DRY-RUN 演示模式] 拟回复成功，已跳过真实点击。")
+                            logger.info(f"[DRY-RUN 演示模式] 拟回复成功 (@{target['author']} -> '{chosen_phrase}')，已跳过真实点击。")
                             summary["replies_posted"] += 1
                             continue
 
-                        # 定位对应的 Reply 按钮并点击
-                        reply_buttons = page.locator('svg[aria-label="Reply"], svg[aria-label="回复"]')
-                        btn_count = await reply_buttons.count()
-                        if target["index"] >= btn_count:
-                            logger.warning(f"未能正确定位第 {target['index']} 个评论的回复按钮，跳过。")
+                        # 精确定位该评论卡片内部的 Reply 按钮 (通过包含 data-pressable-container 的卡片容器)
+                        reply_btn = page.locator(f'a[href*="{target["href"]}"]').locator('xpath=ancestor::div[@data-pressable-container="true"]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').first
+                        if await reply_btn.count() == 0:
+                            reply_btn = page.locator(f'a[href*="{target["href"]}"]').locator('xpath=ancestor::div[6]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"]').first
+
+                        if await reply_btn.count() == 0:
+                            logger.warning(f"未能定位 @{target['author']} 评论的 Reply 按钮，跳过。")
                             continue
 
-                        target_btn = reply_buttons.nth(target["index"])
-                        await target_btn.click()
+                        await reply_btn.click()
                         await page.wait_for_timeout(1500)
 
-                        # 定位回复输入框
-                        # 弹窗内或行内的 contenteditable 输入框
-                        editor = page.locator('div[role="dialog"] div[contenteditable="true"], div[contenteditable="true"]').last
+                        editor = page.locator('div[contenteditable="true"]').last
                         if await editor.count() == 0:
                             logger.warning("未找到回复输入框，跳过本条。")
                             continue
 
                         await editor.click()
                         await page.wait_for_timeout(500)
-                        # 模拟真人输入文字
                         await page.keyboard.insert_text(chosen_phrase)
                         await page.wait_for_timeout(1500)
 
-                        # 点击 Post / Reply 发送按钮
-                        post_btn = page.locator('div[role="dialog"] div[role="button"]:has-text("Post"), div[role="button"]:has-text("Post"), div[role="button"]:has-text("发布"), div[role="button"]:has-text("Reply")').last
-                        if await post_btn.count() == 0:
-                            logger.warning("未找到发送按钮，尝试回车发送...")
-                            await page.keyboard.press("Control+Enter")
+                        # 查找发送按钮：在输入框同一区域的带有 Reply 标识的圆圈图标或按键
+                        send_btn = page.locator('svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').last
+                        if await send_btn.count() > 0:
+                            await send_btn.click()
                         else:
-                            await post_btn.click()
+                            await page.keyboard.press("Control+Enter")
 
-                        # 等待发送网络提交完成
                         await page.wait_for_timeout(4000)
 
                         # 记录到已回复持久化库
@@ -420,6 +399,7 @@ class ThreadsAutoReplier:
                         jitter_wait = random.randint(12, 25)
                         logger.info(f"⏳ [防风控拟人间隔] 等待 {jitter_wait} 秒后再进行下一项操作...")
                         await page.wait_for_timeout(jitter_wait * 1000)
+
 
                 logger.info("\n================ 巡查与互动执行完毕 ================")
                 logger.info(f"扫描帖子: {summary['posts_checked']} 篇 | 符合条件: {summary['posts_eligible']} 篇 | 成功回复: {summary['replies_posted']} 条")
