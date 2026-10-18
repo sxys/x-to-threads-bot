@@ -3,7 +3,8 @@ from dataclasses import dataclass
 from typing import Optional
 from dotenv import load_dotenv
 
-load_dotenv()
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+load_dotenv(os.path.join(BASE_DIR, ".env"))
 
 @dataclass
 class Config:
@@ -19,7 +20,7 @@ class Config:
     X_USERNAME: str = os.getenv("X_USERNAME", "YOUR_X_USERNAME")
     X_EMAIL: str = os.getenv("X_EMAIL", "YOUR_X_EMAIL")
     X_PASSWORD: str = os.getenv("X_PASSWORD", "YOUR_X_PASSWORD")
-    COOKIE_FILE: str = os.getenv("COOKIE_FILE", "x_cookies.json")
+    COOKIE_FILE: str = os.getenv("COOKIE_FILE", os.path.join(BASE_DIR, "x_cookies.json"))
     
     # 流类型: 'for_you' (主页推荐流) 或 'following' (正在关注流)
     TIMELINE_TYPE: str = os.getenv("TIMELINE_TYPE", "for_you")

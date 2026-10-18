@@ -11,8 +11,9 @@ from playwright.async_api import async_playwright, Page
 from x_config import config
 
 
-COOKIE_FILE = "threads_cookies.json"
-REPLIED_HISTORY_FILE = "replied_comments.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIE_FILE = os.path.join(BASE_DIR, "threads_cookies.json")
+REPLIED_HISTORY_FILE = os.path.join(BASE_DIR, "replied_comments.json")
 
 logging.basicConfig(
     level=logging.INFO,

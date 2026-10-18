@@ -7,8 +7,9 @@ from datetime import datetime, timedelta
 from typing import List, Dict, Any
 
 logger = logging.getLogger("QueueManager")
-QUEUE_FILE = "threads_queue.json"
-MEDIA_CACHE_DIR = "media_cache"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+QUEUE_FILE = os.path.join(BASE_DIR, "threads_queue.json")
+MEDIA_CACHE_DIR = os.path.join(BASE_DIR, "media_cache")
 
 
 class QueueManager:

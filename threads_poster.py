@@ -23,7 +23,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [ThreadsPoster] %(message)s"
 )
 logger = logging.getLogger("ThreadsPoster")
-COOKIE_FILE = "threads_cookies.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+COOKIE_FILE = os.path.join(BASE_DIR, "threads_cookies.json")
 
 
 class ThreadsPublisher:

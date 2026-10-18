@@ -167,7 +167,7 @@ crontab -e
 ```
 在文件末尾添加以下一行（每 4 小时整点自动抓取 8 条热门，一天 6 次共 48 条，并在 24 小时内每隔 30 分钟均匀发布）：
 ```cron
-0 */4 * * * /var/www/x-to-threads-bot/.venv/bin/python /var/www/x-to-threads-bot/x_top_bot.py --run-now >> /var/www/x-to-threads-bot/x_bot_daily.log 2>&1
+0 */4 * * * cd /var/www/x-to-threads-bot && /var/www/x-to-threads-bot/.venv/bin/python x_top_bot.py --run-now >> /var/www/x-to-threads-bot/x_bot_daily.log 2>&1
 ```
 
 ### 第五步：注册 Threads 24小时后台自动发帖系统服务

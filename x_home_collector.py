@@ -15,7 +15,8 @@ from x_config import config
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("XHomeCollector")
 
-HISTORY_FILE = "history_tweets.json"
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+HISTORY_FILE = os.path.join(BASE_DIR, "history_tweets.json")
 HISTORY_RETENTION_DAYS = 14  # 历史推文去重保留天数，保证14天内绝不重复抓取相同的热门推文
 
 class XHomeCollector:
@@ -235,9 +236,10 @@ class XHomeCollector:
                 logger.warning(f"读取历史推文记录失败 ({e})，将重置历史库。")
 
         # 兜底：若本地已有现存的 threads_queue.json，将其中已有的推文也纳入历史去重库
-        if os.path.exists("threads_queue.json"):
+        q_file = os.path.join(BASE_DIR, "threads_queue.json")
+        if os.path.exists(q_file):
             try:
-                with open("threads_queue.json", "r", encoding="utf-8") as f:
+                with open(q_file, "r", encoding="utf-8") as f:
                     queue_data = json.load(f)
                     for item in queue_data:
                         tid = str(item.get("id", ""))
