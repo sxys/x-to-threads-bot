@@ -38,6 +38,12 @@ class Config:
     # 在国内访问 X 和 Telegram 需要配置 HTTP/SOCKS 代理，例如: "http://127.0.0.1:7890"
     PROXY: Optional[str] = os.getenv("PROXY", None)
 
+    # ================== 内容清洗与日记过滤配置 ==================
+    # 自动过滤博主第一人称真实生活日记、家庭琐事、就医相亲、感情纠葛流水账（默认开启）
+    FILTER_PERSONAL_DIARY: bool = os.getenv("FILTER_PERSONAL_DIARY", "true").lower() in ("true", "1", "yes")
+    # 自定义排除关键词（以英文或中文逗号分隔，如: "林忆莲,相亲,打卡"）
+    EXCLUDE_KEYWORDS: str = os.getenv("EXCLUDE_KEYWORDS", "")
+
     # ================== 定时任务配置 ==================
     # 每天定时执行的时间 (24小时制，每天早上 08:00)
     SCHEDULE_HOUR: int = int(os.getenv("SCHEDULE_HOUR", "8"))

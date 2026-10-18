@@ -5,7 +5,7 @@ import asyncio
 import logging
 import httpx
 from datetime import datetime, timedelta
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Tuple
 import twikit_patch
 twikit_patch.apply_patch()
 
@@ -135,6 +135,65 @@ class XHomeCollector:
 
         return False
 
+    @classmethod
+    def is_personal_diary_tweet(cls, tweet) -> Tuple[bool, str]:
+        """
+        判断帖子是否为博主个人真实生活日记、家庭琐事、私人就医相亲或感情流水账：
+        这类帖子由于是强第一人称的亲属关系和私密生活记录，作为公共聚合账号转发至 Threads 会显得突兀和怪异。
+        """
+        if not getattr(config, "FILTER_PERSONAL_DIARY", True):
+            return False, ""
+
+        text = getattr(tweet, "text", "") or ""
+        full_text = getattr(tweet, "full_text", "") or text
+        content = full_text or text
+        if not content:
+            return False, ""
+
+        # 0. 用户自定义排除关键词检查（来自 .env 的 EXCLUDE_KEYWORDS）
+        custom_kws = getattr(config, "EXCLUDE_KEYWORDS", "")
+        if custom_kws:
+            kws = [k.strip() for k in re.split(r'[,，]', custom_kws) if k.strip()]
+            for kw in kws:
+                if kw in content:
+                    return True, f"命中用户自定义排除词: '{kw}'"
+
+        # 1. 第一人称家庭/亲密关系核心代词高频出现 (>= 2 次)
+        # 例如: "我妈...我妈", "我爸...我妈", "我老公...我"
+        rel_pattern = r'我(妈|爸|母亲|父亲|老公|老婆|男朋友|女朋友|男票|女票|对象|公公|婆婆|岳父|岳母|闺蜜|室友|儿子|女儿)'
+        rel_matches = re.findall(rel_pattern, content)
+        if len(rel_matches) >= 2:
+            return True, f"高频第一人称亲属代词 (出现 {len(rel_matches)} 次: {rel_matches})"
+
+        # 2. 经典生活流水账与第一人称亲密互动正则模式
+        DIARY_PATTERNS = [
+            # 伴侣/亲属动作同行与互动 (如: "带我妈去看了演唱会", "陪我爸去医院", "跟我老公吵架")
+            (r'(带|陪|跟|和|帮|替)我(妈|爸|母亲|父亲|老公|老婆|男朋友|女朋友|男票|女票|对象|公公|婆婆|岳父|岳母|闺蜜|室友|儿子|女儿)', '家庭/伴侣第一人称同行与互动'),
+            # 亲属言语与家常行为 (如: "我妈问我票价多少，我说", "我老公给我买的", "我妈今天生日")
+            (r'我(妈|爸|母亲|父亲|老公|老婆|男朋友|女朋友|男票|女票|对象|公公|婆婆|闺蜜|室友)(问我|跟我说|对我说|说|带我|买给|做饭|做菜|煮了|生日|生病|住院|体检|手术|催婚|逼我)', '家庭琐事行为与长辈言行'),
+            # 私人庆祝生日/纪念日
+            (r'祝(我|他|她|咱)?(妈|爸|老公|老婆|男朋友|女朋友|对象)?生日快乐', '私人/亲友生日祝福'),
+            (r'今天(我|我妈|我爸|我老公|我老婆|我男朋友|我女朋友|我对象)生日', '私人亲友生日记录'),
+            (r'(和|跟)(我)?(男朋友|女朋友|男票|女票|老公|老婆|对象|男盆友|女盆友).{0,15}(领证|结婚|订婚|同居|吵架|冷战|分手|复合|逛街|约会|看电影|吃火锅|旅游)', '伴侣情感与恋爱日常'),
+            # 恋爱/结婚纪念日
+            (r'(恋爱|结婚|领证|在一起|相恋|相识).{0,6}(一|两|二|三|四|五|六|七|八|九|十|\d+)周年', '恋爱/结婚周年纪念'),
+            # 就医体检与生理私事
+            (r'(今天去|刚去|准备去|陪你去)(相亲|拔智齿|看牙|做产检|打宫颈癌疫苗|打hpv|体检|做胃镜|做肠镜)', '个人就医与私事'),
+            (r'(查出怀孕|我怀孕了|休产假|顺产|剖腹产|生了个男宝|生了个女宝)', '个人生育私事'),
+            # 感情前任与相亲纠葛
+            (r'(前任|前男友|前女友)(发微信|发信息|找我|点赞我|求复合|突然联系我)', '前任私事流水账'),
+            (r'(今天|刚才|下午)去相亲.{0,20}(相亲对象|男方|女方|奇葩)', '相亲私事流水账'),
+            # 琐事对白流水账 (如: "问我票价多少，我说...她说...")
+            (r'(问我.{0,15}我说|我问.{0,10}她说|对我说.{0,15}我说|我说.{0,15}她说)', '第一人称对话流水账'),
+        ]
+
+        for pattern, desc in DIARY_PATTERNS:
+            m = re.search(pattern, content)
+            if m:
+                return True, f"{desc} (匹配: '{m.group()}')"
+
+        return False, ""
+
     @staticmethod
     def _normalize_text_fingerprint(text: str) -> str:
         """生成推文核心文案指纹，去除 URL、标点及空格，用于内容级查重"""
@@ -256,9 +315,10 @@ class XHomeCollector:
         duplicate_filtered_count = 0
         filtered_count = 0
         ad_filtered_count = 0
+        diary_filtered_count = 0
 
         def process_batch(tweets_batch):
-            nonlocal all_tweets, seen_ids, duplicate_filtered_count, filtered_count, ad_filtered_count
+            nonlocal all_tweets, seen_ids, duplicate_filtered_count, filtered_count, ad_filtered_count, diary_filtered_count
             if not tweets_batch:
                 return
             for tweet in tweets_batch:
@@ -280,6 +340,16 @@ class XHomeCollector:
                 # 严格原生中文过滤
                 if not self.is_original_chinese(tweet):
                     filtered_count += 1
+                    continue
+
+                # 排除博主第一人称真实生活日记、家庭隐私琐事与流水账
+                is_diary, diary_reason = self.is_personal_diary_tweet(tweet)
+                if is_diary:
+                    diary_filtered_count += 1
+                    user_obj = getattr(tweet, "user", None)
+                    s_name = getattr(user_obj, "screen_name", "user") if user_obj else "user"
+                    t_snippet = (getattr(tweet, "text", "") or "").replace("\n", " ")[:35]
+                    logger.info(f"🚫 [已跳过个人日记/私事推文] @{s_name}: {diary_reason} - {t_snippet}...")
                     continue
 
                 user = getattr(tweet, "user", None)
@@ -304,7 +374,7 @@ class XHomeCollector:
                 })
 
         process_batch(result)
-        logger.info(f"第 1 页抓取完成，当前符合要求的全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count})")
+        logger.info(f"第 1 页抓取完成，当前符合要求的全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count}, 过滤个人日记: {diary_filtered_count})")
 
         # 异步翻页收集更多中文帖子
         for page in range(2, max_pages + 1):
@@ -319,7 +389,7 @@ class XHomeCollector:
                     logger.info("无更多主页数据，停止翻页。")
                     break
                 process_batch(result)
-                logger.info(f"第 {page} 页抓取完成，累计全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count})")
+                logger.info(f"第 {page} 页抓取完成，累计全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count}, 过滤个人日记: {diary_filtered_count})")
             except Exception as e:
                 logger.warning(f"第 {page} 页翻页抓取出现异常 ({e})，停止翻页。")
                 break
