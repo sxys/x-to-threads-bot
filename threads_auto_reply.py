@@ -9,7 +9,7 @@ from datetime import datetime
 from typing import List, Dict, Any, Optional
 from playwright.async_api import async_playwright, Page
 from x_config import config
-from tg_sender import TelegramSender
+
 
 COOKIE_FILE = "threads_cookies.json"
 REPLIED_HISTORY_FILE = "replied_comments.json"
@@ -403,24 +403,6 @@ class ThreadsAutoReplier:
 
                 logger.info("\n================ 巡查与互动执行完毕 ================")
                 logger.info(f"扫描帖子: {summary['posts_checked']} 篇 | 符合条件: {summary['posts_eligible']} 篇 | 成功回复: {summary['replies_posted']} 条")
-
-                # 5. Telegram 消息通知（若有回复产生）
-                if summary["replies_posted"] > 0 and config.TG_BOT_TOKEN and config.TG_CHAT_ID:
-                    try:
-                        sender = TelegramSender()
-                        lines = [f"• 回复 @{d['author']}: <i>\"{d['reply']}\"</i>" for d in summary["details"][:5]]
-                        tg_msg = (
-                            f"💬 <b>【Threads 粉丝评论自动互动汇报】</b>\n"
-                            f"────────────────────────\n"
-                            f"巡查帖子: <b>{summary['posts_checked']}</b> 篇\n"
-                            f"成功互动: <b>{summary['replies_posted']}</b> 位粉丝留言\n\n"
-                            f"<b>互动明细</b>：\n" + "\n".join(lines) + "\n"
-                            f"────────────────────────\n"
-                            f"账号活跃度已提升，已自动记录防重。"
-                        )
-                        sender.send_message(tg_msg)
-                    except Exception as tg_err:
-                        logger.warning(f"发送 Telegram 互动汇报失败: {tg_err}")
 
                 return summary
 
