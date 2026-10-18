@@ -86,10 +86,11 @@ x-to-threads-bot/
 ### 3. 主页评论自动巡查与粉丝互动（threads_auto_reply.py）
 | 操作 | 命令 | 说明 |
 | :--- | :--- | :--- |
-| **立即单次巡查并回复** | `python threads_auto_reply.py --run-now` | 立即巡查主页最新 5 条帖子，为评论数 $\le 10$ 的帖子随机拟人回复 1~2 位真实粉丝 |
+| **立即单次巡查并回复** | `python threads_auto_reply.py --run-now` | 立即巡查主页最新 12 条帖子（覆盖过去 6 小时内容），为评论数 $\le 10$ 的帖子随机拟人回复 1~2 位真实粉丝 |
 | **仅模拟巡查（不真实发送）** | `python threads_auto_reply.py --dry-run` | 仅抓取和分析主页帖子评论区，并在控制台展示选中的粉丝和回复话术 |
 | **自定义评论上限阈值** | `python threads_auto_reply.py --threshold 15` | 当评论数 $\le 15$ 时才触发回复（默认 10） |
-| **常驻守护后台巡查** | `python threads_auto_reply.py --daemon --interval-hours 4` | 后台常驻，每 4 小时自动巡查一次 |
+| **自定义巡查帖子深度** | `python threads_auto_reply.py --limit 16` | 自定义单次扫描的主页帖子篇数（默认 12 篇） |
+| **常驻守护后台巡查** | `python threads_auto_reply.py --daemon --interval-hours 2` | 后台常驻，每 2 小时自动巡查一次（默认 2 小时） |
 
 ### 4. Telegram 机器人互动指令（无需登录服务器）
 直接在 Telegram 聊天窗口中向机器人发送：
@@ -106,7 +107,7 @@ x-to-threads-bot/
 | **查看已安装的定时任务** | `crontab -l` | 查看当前正在生效的 cron 清单 |
 | **查看抓取执行历史日志** | `cat x_bot_daily.log` 或 `tail -n 50 x_bot_daily.log` | 查看每 4 小时任务的抓取与推送日志 |
 | **(可选) 凌晨定时深度清理媒体** | `0 3 * * * ... --clean-media` | 每天凌晨 03:00 自动清理一次媒体缓存（详见后文） |
-| **(推荐) 评论自动巡查 Crontab** | `0 */4 * * * ... threads_auto_reply.py --run-now` | 每 4 小时自动巡查一次主页帖子并互动 |
+| **(推荐) 评论自动巡查 Crontab** | `0 */2 * * * ... threads_auto_reply.py --run-now` | 每 2 小时自动巡查一次主页最新 12 篇帖子并互动 |
 
 ### 6. Threads 常驻后台服务管理（Systemd）
 | 操作 | 命令 | 说明 |

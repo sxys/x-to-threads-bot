@@ -42,7 +42,7 @@ class ThreadsAutoReplier:
         headless: bool = True,
         max_replies_per_post: int = 2,
         max_comments_threshold: int = 10,
-        check_posts_limit: int = 5,
+        check_posts_limit: int = 12,
         custom_phrases: Optional[List[str]] = None
     ):
         self.headless = headless
@@ -200,34 +200,14 @@ class ThreadsAutoReplier:
                 await page.goto(profile_url, timeout=30000, wait_until="domcontentloaded")
                 await page.wait_for_timeout(4000)
 
-                # 3. 提取博主最近发布的帖子链接
-                post_links = await page.evaluate("""(myUser) => {
-                    const links = Array.from(document.querySelectorAll('a'));
-                    const urls = [];
-                    for (const a of links) {
-                        const href = a.getAttribute('href') || '';
-                        if (href.includes(`/@${myUser}/post/`)) {
-                            const full = href.startsWith('http') ? href : `https://www.threads.com${href}`;
-                            // 去除 url 后面可能附带的查询参数
-                            const clean = full.split('?')[0];
-                            if (!urls.includes(clean)) {
-                                urls.push(clean);
-                            }
-                        }
-                    }
-                    return urls;
-                }""", my_username)
-
-                if not post_links:
-                    logger.info("在个人主页未检测到发布的帖子（或页面加载中），尝试滚动页面重新提取...")
-                    await page.mouse.wheel(0, 1000)
-                    await page.wait_for_timeout(2000)
-                    post_links = await page.evaluate("""(myUser) => {
+                # 3. 提取博主最近发布的帖子链接（支持向下滚动以加载满 limit 条）
+                async def _scan_profile_links():
+                    return await page.evaluate("""(myUser) => {
                         const links = Array.from(document.querySelectorAll('a'));
                         const urls = [];
                         for (const a of links) {
                             const href = a.getAttribute('href') || '';
-                            if (href.includes('/post/')) {
+                            if (href.includes(`/@${myUser}/post/`) || href.includes('/post/')) {
                                 const full = href.startsWith('http') ? href : `https://www.threads.com${href}`;
                                 const clean = full.split('?')[0];
                                 if (!urls.includes(clean)) {
@@ -237,6 +217,14 @@ class ThreadsAutoReplier:
                         }
                         return urls;
                     }""", my_username)
+
+                post_links = await _scan_profile_links()
+                scroll_count = 0
+                while len(post_links) < self.check_posts_limit and scroll_count < 4:
+                    scroll_count += 1
+                    await page.mouse.wheel(0, 1500)
+                    await page.wait_for_timeout(2000)
+                    post_links = await _scan_profile_links()
 
                 post_links = post_links[:self.check_posts_limit]
                 logger.info(f"共扫描到个人最新发布的 {len(post_links)} 条帖子，准备开始巡查评论区...")
@@ -420,9 +408,9 @@ def main():
     parser.add_argument("--dry-run", action="store_true", help="仅巡查并展示匹配到的评论，不执行真实回复点击")
     parser.add_argument("--threshold", type=int, default=10, help="触发回复的评论数上限（默认 10 条以内）")
     parser.add_argument("--per-post", type=int, default=2, help="每个帖子最多回复人数（默认 1~2 人）")
-    parser.add_argument("--limit", type=int, default=5, help="巡查自己最近发布的帖子数量（默认 5 条）")
+    parser.add_argument("--limit", type=int, default=12, help="巡查自己最近发布的帖子数量（默认 12 条，覆盖过去 6 小时内发布的帖子）")
     parser.add_argument("--daemon", action="store_true", help="以常驻后台模式运行，定期巡查")
-    parser.add_argument("--interval-hours", type=float, default=4.0, help="常驻模式下的巡查间隔时间（小时，默认 4 小时）")
+    parser.add_argument("--interval-hours", type=float, default=2.0, help="常驻模式下的巡查间隔时间（小时，推荐 2 小时）")
     args = parser.parse_args()
 
     replier = ThreadsAutoReplier(
