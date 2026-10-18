@@ -207,6 +207,7 @@ class ThreadsAutoReplier:
                         const urls = [];
                         for (const a of links) {
                             const href = a.getAttribute('href') || '';
+                            if (href.endsWith('/media') || href.includes('/media')) continue;
                             if (href.includes(`/@${myUser}/post/`) || href.includes('/post/')) {
                                 const full = href.startsWith('http') ? href : `https://www.threads.com${href}`;
                                 const clean = full.split('?')[0];
@@ -325,7 +326,13 @@ class ThreadsAutoReplier:
                     selected_candidates = random.sample(candidates, target_count)
                     logger.info(f"🎯 选定回复其中 {len(selected_candidates)} 条粉丝评论：")
 
-                    for target in selected_candidates:
+                    for t_idx, target in enumerate(selected_candidates):
+                        # 如果同一个帖子回复多位粉丝，回复完第一位后页面停留在其子线程，必须重新导航回帖子主页
+                        if t_idx > 0 and not dry_run:
+                            logger.info(f"正在返回帖子主页以处理下一条粉丝评论 (@{target['author']})...")
+                            await page.goto(post_url, timeout=35000, wait_until="domcontentloaded")
+                            await page.wait_for_timeout(3000)
+
                         chosen_phrase = random.choice(self.phrases)
                         logger.info(f"👉 准备回复 @{target['author']} ('{target['text'][:20]}...'): \"{chosen_phrase}\"")
 
@@ -334,15 +341,27 @@ class ThreadsAutoReplier:
                             summary["replies_posted"] += 1
                             continue
 
-                        # 精确定位该评论卡片内部的 Reply 按钮 (通过包含 data-pressable-container 的卡片容器)
+                        # 精确定位该评论卡片内部的 Reply 按钮
+                        # 策略 1: 通过评论专属子链接查找卡片容器
                         reply_btn = page.locator(f'a[href*="{target["href"]}"]').locator('xpath=ancestor::div[@data-pressable-container="true"]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').first
+
+                        # 策略 2: 备用策略，通过评论作者主页链接查找卡片容器
                         if await reply_btn.count() == 0:
-                            reply_btn = page.locator(f'a[href*="{target["href"]}"]').locator('xpath=ancestor::div[6]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"]').first
+                            reply_btn = page.locator(f'a[href="/@{target["author"]}"]').first.locator('xpath=ancestor::div[@data-pressable-container="true"]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').first
+
+                        # 策略 3: 如果当前不在视口内，向下微幅滚动并重试
+                        if await reply_btn.count() == 0:
+                            await page.mouse.wheel(0, 800)
+                            await page.wait_for_timeout(1500)
+                            reply_btn = page.locator(f'a[href*="{target["href"]}"]').locator('xpath=ancestor::div[@data-pressable-container="true"]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').first
+                            if await reply_btn.count() == 0:
+                                reply_btn = page.locator(f'a[href="/@{target["author"]}"]').first.locator('xpath=ancestor::div[@data-pressable-container="true"]').locator('svg[title="Reply"], svg[title="回复"], svg[title="回覆"], svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').first
 
                         if await reply_btn.count() == 0:
                             logger.warning(f"未能定位 @{target['author']} 评论的 Reply 按钮，跳过。")
                             continue
 
+                        await reply_btn.scroll_into_view_if_needed()
                         await reply_btn.click()
                         await page.wait_for_timeout(1500)
 
