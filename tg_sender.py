@@ -52,7 +52,7 @@ class TelegramSender:
 
         # 1. 先发一个头部汇总
         header_msg = (
-            f"🔥 <b>【X 主页今日热度 Top {len(tweets)} 推荐】</b>\n"
+            f"🔥 <b>【X 主页最新热度 Top {len(tweets)} 推荐】</b>\n"
             f"📅 时间: <code>{time.strftime('%Y-%m-%d %H:%M:%S')}</code>\n"
             f"🎯 来源: <b>{config.TIMELINE_TYPE.upper()} 流</b> | 筛选总数: <b>{len(tweets)}</b> 条\n"
             f"────────────────────────"

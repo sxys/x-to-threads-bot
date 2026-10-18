@@ -25,8 +25,10 @@ class Config:
     TIMELINE_TYPE: str = os.getenv("TIMELINE_TYPE", "for_you")
     
     # ================== 抓取与热度权重配置 ==================
-    TOP_LIMIT: int = int(os.getenv("TOP_LIMIT", "20"))          # 发送前 20 个
+    TOP_LIMIT: int = int(os.getenv("TOP_LIMIT", "8"))          # 每次抓取热门推文数量（默认 8 条，每 4 小时一次，一天 6 次共 48 条）
     FETCH_PAGES: int = int(os.getenv("FETCH_PAGES", "5"))       # 滚动翻页次数（每次约20-40条候选）
+    POST_INTERVAL_MINUTES: int = int(os.getenv("POST_INTERVAL_MINUTES", "30")) # 每条推文间隔发布时间（分钟，默认 30）
+    SCHEDULE_INTERVAL_HOURS: int = int(os.getenv("SCHEDULE_INTERVAL_HOURS", "4")) # 抓取间隔周期（小时，默认 4）
     
     # 热度权重公式: Score = (likes * W_LIKE) + (retweets * W_RT) + (replies * W_REPLY) + (quotes * W_QUOTE)
     WEIGHT_LIKE: float = float(os.getenv("WEIGHT_LIKE", "1.0"))

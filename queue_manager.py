@@ -22,24 +22,20 @@ class QueueManager:
         return cleaned
 
     @staticmethod
-    def generate_schedule_times(count: int, start_dt: datetime = None, duration_hours: float = 24.0) -> List[str]:
+    def generate_schedule_times(count: int, start_dt: datetime = None, interval_minutes: int = 30) -> List[str]:
         """
-        全天 24 小时均匀分布发帖时间表：
-        从 start_dt 开始（默认当前时刻），在接下来的 24 小时（1440 分钟）内均匀分布。
-        20 条推文平均间隔约 70~72 分钟，并附加 ±3 分钟的随机抖动，完全模拟真人发帖规律。
+        按指定时间间隔（默认 30 分钟）均匀分布发帖时间表：
+        从 start_dt 开始（默认当前时刻），每条推文间隔 interval_minutes，
+        附加 ±3 分钟人类拟真随机抖动。
         """
         if start_dt is None:
             start_dt = datetime.now()
 
-        total_minutes = int(duration_hours * 60)  # 24 * 60 = 1440 分钟
-        step = (total_minutes - 30) / max(count, 1)
-
         times = []
         for i in range(count):
             jitter = random.randint(-3, 3)
-            minute_offset = 10 + int(i * step) + jitter
-            minute_offset = max(3, min(total_minutes - 5, minute_offset))
-            target_time = start_dt + timedelta(minutes=minute_offset)
+            minute_offset = int(i * interval_minutes) + jitter
+            target_time = start_dt + timedelta(minutes=max(2, minute_offset))
             times.append(target_time.strftime("%Y-%m-%d %H:%M:%S"))
         return times
 
@@ -89,23 +85,69 @@ class QueueManager:
         return {"type": media_type, "files": downloaded_files}
 
     @classmethod
-    async def build_threads_queue(cls, top_tweets_with_obj: List[Dict[str, Any]]) -> str:
+    async def build_threads_queue(cls, top_tweets_with_obj: List[Dict[str, Any]], interval_minutes: int = 30) -> str:
         """
-        根据 Top 20 帖子生成包含本地媒体路径与发布时间的 threads_queue.json
+        根据抓取的热门帖子平摊排期并追加合并至 threads_queue.json：
+        - 每 4 小时抓取一批（如 8 条），在 4 小时内按每隔约 30 分钟均匀发布一条
+        - 如果队列中已有待发任务，新任务无缝顺延在其后，杜绝冲掉现有任务
+        - 自动清理历史已发布媒体文件，保障磁盘空间充裕
         """
         count = len(top_tweets_with_obj)
         if count == 0:
             return QUEUE_FILE
 
-        # 1. 构建新队列前，自动清理历史与已发布的媒体文件，保障磁盘空间充足
+        # 1. 自动清理已发帖子的本地媒体文件，保障磁盘空间充裕
         cls.cleanup_media_cache()
 
-        times = cls.generate_schedule_times(count, duration_hours=24.0)
-        queue_items = []
+        # 2. 读取现有队列
+        existing_queue = cls.load_queue()
 
-        logger.info(f"正在为 {count} 条热门帖子下载媒体资源并生成发布队列...")
+        # 过滤并保留最近的已发布任务（最多保留 48 条记录用于状态查看）
+        published_items = [i for i in existing_queue if i.get("status") == "published"][-48:]
+        pending_items = [i for i in existing_queue if i.get("status") == "pending"]
 
-        for idx, item in enumerate(top_tweets_with_obj):
+        existing_ids = {str(i.get("id")) for i in existing_queue}
+
+        # 3. 过滤掉队列中已存在的推文（防止重复加入）
+        new_tweets = []
+        for item in top_tweets_with_obj:
+            tid = str(item["id"])
+            if tid not in existing_ids:
+                new_tweets.append(item)
+            else:
+                logger.info(f"推文 #{tid} 已在发布队列中，跳过重复添加。")
+
+        if not new_tweets:
+            logger.info("本次抓取的所有推文已存在于发布队列中，无需重复添加。")
+            return QUEUE_FILE
+
+        # 4. 计算排期时间：
+        # 如果当前队列中已有待发任务，且最后一个任务的计划时间在未来，
+        # 则新任务无缝排在最后一个待发任务之后（间隔 interval_minutes）
+        latest_pending_dt = None
+        for item in pending_items:
+            t_str = item.get("scheduled_time")
+            if t_str:
+                try:
+                    dt = datetime.strptime(t_str, "%Y-%m-%d %H:%M:%S")
+                    if latest_pending_dt is None or dt > latest_pending_dt:
+                        latest_pending_dt = dt
+                except Exception:
+                    pass
+
+        now = datetime.now()
+        if latest_pending_dt and latest_pending_dt > now:
+            start_dt = latest_pending_dt + timedelta(minutes=interval_minutes)
+        else:
+            # 队列当前无待发任务，第一条在 12~18 分钟后发出
+            start_dt = now + timedelta(minutes=max(10, interval_minutes // 2))
+
+        times = cls.generate_schedule_times(len(new_tweets), start_dt=start_dt, interval_minutes=interval_minutes)
+
+        logger.info(f"正在为 {len(new_tweets)} 条新增热门帖子下载媒体资源并排期 (每隔约 {interval_minutes} 分钟发一条)...")
+
+        new_queue_items = []
+        for idx, item in enumerate(new_tweets):
             tweet_obj = item.get("tweet_obj")
             tweet_id = item["id"]
             cleaned_text = cls.clean_tweet_text(item.get("full_text", item["text"]))
@@ -114,8 +156,8 @@ class QueueManager:
             if tweet_obj:
                 media_info = await cls.download_tweet_media(tweet_obj, tweet_id)
 
-            queue_items.append({
-                "index": idx + 1,
+            new_queue_items.append({
+                "index": 0,
                 "id": tweet_id,
                 "url": item["url"],
                 "author": item["author"],
@@ -128,10 +170,12 @@ class QueueManager:
                 "error": None
             })
 
-        with open(QUEUE_FILE, "w", encoding="utf-8") as f:
-            json.dump(queue_items, f, ensure_ascii=False, indent=2)
+        full_queue = published_items + pending_items + new_queue_items
+        for idx, item in enumerate(full_queue):
+            item["index"] = idx + 1
 
-        logger.info(f"发布队列生成成功！共 {len(queue_items)} 个任务已写入 {QUEUE_FILE}")
+        cls.save_queue(full_queue)
+        logger.info(f"发布队列更新成功！本次新增 {len(new_queue_items)} 条，当前队列共 {len(full_queue)} 条（待发 {len(pending_items) + len(new_queue_items)} 条）。")
         return QUEUE_FILE
 
     @classmethod
@@ -182,10 +226,10 @@ class QueueManager:
         return None
 
     @classmethod
-    def reschedule_pending_tasks(cls, start_dt: datetime = None, target_end_dt: datetime = None):
+    def reschedule_pending_tasks(cls, start_dt: datetime = None, interval_minutes: int = 30):
         """
         对当前队列中所有尚未发布的任务进行平摊重排：
-        将剩余待发任务按均匀时间间隔重新排布至下一个 24 小时周期（或次日早上 08:00），
+        将剩余待发任务按均匀时间间隔（每隔约 30 分钟）重新排布，
         避免中途启动或暂停后积压连发。
         """
         queue = cls.load_queue()
@@ -197,37 +241,17 @@ class QueueManager:
         if start_dt is None:
             start_dt = now + timedelta(minutes=2)
 
-        if target_end_dt is None:
-            # 默认目标结束时间为下一次抓取的时间（次日早上 08:00）
-            today_8am = datetime(now.year, now.month, now.day, 8, 0, 0)
-            if now < today_8am:
-                next_cycle = today_8am
-            else:
-                next_cycle = today_8am + timedelta(days=1)
-            # 保证平均每个任务至少有 30 分钟间隔
-            min_end = start_dt + timedelta(minutes=max(len(pending_indices) * 45, 120))
-            target_end_dt = max(next_cycle, min_end)
-
-        remaining_minutes = (target_end_dt - start_dt).total_seconds() / 60
         count = len(pending_indices)
-
-        if count == 1:
-            step = 0
-        else:
-            step = remaining_minutes / max(count - 1, 1)
-
-        logger.info(f"正在对剩余 {count} 条待发任务进行 24 小时均匀平摊重排（可用时间: {remaining_minutes/60:.1f} 小时，平均间隔: {step:.1f} 分钟）...")
+        logger.info(f"正在对剩余 {count} 条待发任务进行平摊重排（每隔约 {interval_minutes} 分钟发布一条）...")
 
         for rank, q_idx in enumerate(pending_indices):
-            offset = int(rank * step)
-            jitter = random.randint(-3, 3) if step >= 15 else 0
+            offset = int(rank * interval_minutes)
+            jitter = random.randint(-2, 2)
             task_time = start_dt + timedelta(minutes=max(0, offset + jitter))
-            if task_time > target_end_dt:
-                task_time = target_end_dt
             queue[q_idx]["scheduled_time"] = task_time.strftime("%Y-%m-%d %H:%M:%S")
 
         cls.save_queue(queue)
-        logger.info(f"重排完成！下一条任务计划将在 {queue[pending_indices[0]]['scheduled_time']} 发出。")
+        logger.info(f"重排完成！共 {count} 条待发任务已重新排期，下一条将在 {queue[pending_indices[0]]['scheduled_time']} 发出。")
         return queue
 
     @classmethod
@@ -364,12 +388,12 @@ class QueueManager:
         media_info = await cls.download_tweet_media(tweet, tweet_id_str)
         cleaned_text = cls.clean_tweet_text(getattr(tweet, "full_text", "") or getattr(tweet, "text", ""))
 
-        # 2. 计算选项 A：下一个可发布的避峰安全时间窗口（发帖防抖冷却至少 40 分钟）
+        # 2. 计算选项 A：下一个可发布的避峰安全时间窗口（发帖防抖冷却至少 20 分钟）
         now = datetime.now()
         last_pub = cls.get_last_published_time()
         if last_pub:
             elapsed_mins = (now - last_pub).total_seconds() / 60
-            safe_wait = max(2, int(40 - elapsed_mins))
+            safe_wait = max(2, int(20 - elapsed_mins))
         else:
             safe_wait = 2
         priority_time = now + timedelta(minutes=safe_wait)
@@ -397,21 +421,12 @@ class QueueManager:
         published_items = [i for i in queue if i.get("status") != "pending"]
         other_pending = [i for i in queue if i.get("status") == "pending"]
 
-        # 后续待发任务从 priority_time + 40 分钟开始顺延平分至次日 08:00
+        # 后续待发任务从 priority_time + 30 分钟开始顺延，每隔 30 分钟发布一条
         if other_pending:
-            subsequent_start = priority_time + timedelta(minutes=40)
-            today_8am = datetime(now.year, now.month, now.day, 8, 0, 0)
-            next_cycle = today_8am if now < today_8am else today_8am + timedelta(days=1)
-            min_end = subsequent_start + timedelta(minutes=max(len(other_pending) * 45, 120))
-            target_end = max(next_cycle, min_end)
-
-            remaining_minutes = (target_end - subsequent_start).total_seconds() / 60
-            count = len(other_pending)
-            step = remaining_minutes / max(count, 1)
-
+            subsequent_start = priority_time + timedelta(minutes=30)
             for rank, item in enumerate(other_pending):
-                offset = int(rank * step)
-                jitter = random.randint(-3, 3) if step >= 15 else 0
+                offset = int(rank * 30)
+                jitter = random.randint(-2, 2)
                 t_time = subsequent_start + timedelta(minutes=max(0, offset + jitter))
                 item["scheduled_time"] = t_time.strftime("%Y-%m-%d %H:%M:%S")
 

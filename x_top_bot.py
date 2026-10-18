@@ -58,13 +58,13 @@ def main():
     scheduler.add_job(
         execute_daily_task,
         trigger='cron',
-        hour=config.SCHEDULE_HOUR,
-        minute=config.SCHEDULE_MINUTE
+        hour=f"*/{config.SCHEDULE_INTERVAL_HOURS}",
+        minute=0
     )
 
     logger.info(
-        f"🚀 调度程序已启动！每天 {config.SCHEDULE_HOUR:02d}:{config.SCHEDULE_MINUTE:02d} "
-        f"自动从 X 主页抓取 Top {config.TOP_LIMIT} 帖子推送至 Telegram。"
+        f"🚀 调度程序已启动！每 {config.SCHEDULE_INTERVAL_HOURS} 小时整点 "
+        f"自动从 X 主页抓取 Top {config.TOP_LIMIT} 帖子推送至 Telegram 并加入发布队列。"
     )
     logger.info("提示: 可随时使用 Ctrl + C 停止程序。如需立即测试一次可运行: python x_top_bot.py --run-now")
 

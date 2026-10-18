@@ -299,8 +299,8 @@ class XHomeCollector:
         history = self._load_history()
 
         timeline_type = config.TIMELINE_TYPE.lower()
-        max_pages = max(config.FETCH_PAGES, 10)  # 适当增加翻页次数，确保排除历史重复推文后候选池依然充足
-        target_candidates = config.TOP_LIMIT * 2  # 收集到 40 条原生中文候选即可提前停止
+        max_pages = max(config.FETCH_PAGES, 8)  # 适当翻页确保候选池充足
+        target_candidates = max(config.TOP_LIMIT * 3, 20)  # 收集足够多的原生中文候选即可提前停止
 
         logger.info(f"开始抓取主页流 (类型: {timeline_type})，严格去重、筛选原生中文且跳过广告帖子...")
 
@@ -407,10 +407,10 @@ class XHomeCollector:
         # 持久化保存今日入选的 Top 推文至历史去重库
         self._save_history(top_list, history)
 
-        # 自动生成 Threads 待发队列并下载本地多媒体资源
+        # 自动生成/追加 Threads 待发队列并下载本地多媒体资源
         try:
             from queue_manager import QueueManager
-            await QueueManager.build_threads_queue(top_list)
+            await QueueManager.build_threads_queue(top_list, interval_minutes=config.POST_INTERVAL_MINUTES)
         except Exception as e:
             logger.error(f"生成 Threads 队列或下载媒体失败: {e}", exc_info=True)
 

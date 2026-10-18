@@ -286,15 +286,15 @@ def print_queue_status():
     print(f"总计: {len(queue)} 条 | 已发布: {published_count} 条 | 待发布: {pending_count} 条\n")
 
 
-async def run_worker(min_interval_minutes: int = 40):
+async def run_worker(min_interval_minutes: int = 20):
     """
     后台轮询调度服务：全天 24 小时自动检查并均匀分发队列
     集成两大安全防护机制：
-    1. 启动自检与平摊重排：检测到中途启动或积压过期任务时，自动按剩余时间均匀重新排布
+    1. 启动自检与平摊重排：检测到中途启动或积压过期任务时，自动按配置的时间间隔重新排布
     2. 严格的冷却防抖保护：强制两次发帖之间至少间隔 min_interval_minutes 分钟，绝不连发
     """
     logger.info("🚀 Threads 自动发布服务已启动！正在监控队列...")
-    logger.info(f"全天 24 小时均匀分发（平均每隔约 70 分钟发布一条），发帖冷却保护设置为: 至少间隔 {min_interval_minutes} 分钟。")
+    logger.info(f"全天 24 小时均匀分发（平均每隔约 {config.POST_INTERVAL_MINUTES} 分钟发布一条），发帖冷却保护设置为: 至少间隔 {min_interval_minutes} 分钟。")
     publisher = ThreadsPublisher(headless=True)
 
     # 启动 Telegram 双向互动监听（支持在 Telegram 发送 X 链接以最高优先级插队发帖）
@@ -311,8 +311,8 @@ async def run_worker(min_interval_minutes: int = 40):
     queue = QueueManager.load_queue()
     has_overdue = any(i.get("status") == "pending" and i.get("scheduled_time", "") < now_str for i in queue)
     if has_overdue:
-        logger.info("⚠️ 检测到队列中存在早于当前时间的待发任务（中途启动或积压），正在重新均匀规划今日剩余时间段...")
-        QueueManager.reschedule_pending_tasks()
+        logger.info("⚠️ 检测到队列中存在早于当前时间的待发任务（中途启动或积压），正在重新均匀规划时间段...")
+        QueueManager.reschedule_pending_tasks(interval_minutes=config.POST_INTERVAL_MINUTES)
 
     last_cleanup_dt = datetime.now()
 
@@ -375,7 +375,7 @@ def main():
     parser.add_argument("--test", type=str, help="直接发布自定义测试文案到 Threads（无需依赖队列）")
     parser.add_argument("--add-tweet", type=str, help="手动传入一个 X 推文链接或 ID，以最高优先级插队排期")
     parser.add_argument("--reschedule", action="store_true", help="启动时先强制重新平摊排布待发任务，再进入 24 小时常驻监听服务")
-    parser.add_argument("--interval", type=int, default=40, help="两次发帖之间的最小安全冷却时间（分钟，默认 40）")
+    parser.add_argument("--interval", type=int, default=20, help="两次发帖之间的最小安全冷却时间（分钟，默认 20）")
     args = parser.parse_args()
 
     if args.clean_media:
@@ -428,8 +428,8 @@ def main():
         return
 
     if args.reschedule:
-        QueueManager.reschedule_pending_tasks()
-        print("\n已完成 24 小时平摊重排，队列计划如下：")
+        QueueManager.reschedule_pending_tasks(interval_minutes=config.POST_INTERVAL_MINUTES)
+        print("\n已完成平摊重排，队列计划如下：")
         print_queue_status()
         logger.info("已完成重排，正在进入全天 24 小时自动发布常驻服务...")
 
