@@ -23,12 +23,16 @@
    - 自动解析推文多媒体，下载完整 MP4 高清视频流与原图到本地缓存。
    - **全天 24 小时平摊排期**：推文在 24 小时内（直到次日早晨 08:00）均匀分布，平均每隔约 **70~72 分钟** 发布一条，附带 $\pm 3$ 分钟随机抖动，完全模拟真人节奏。
    - **发帖防抖冷却保护（Cool-down Guard）**：两次发帖之间强制保证至少 40 分钟安全间隔，杜绝平台风控。
-4. **磁盘空间极致瘦身（即发即清，专为小硬盘 VPS 优化）**：
+4. **Threads 个人主页评论自动巡查与轻量互动（NEW 🔥）**：
+   - 自动定时巡视自己主页发布的帖子，专挑互动较少（如 10 条以内）的帖子进行维护。
+   - 随机挑选 1~2 位真实粉丝留言，使用亲和、赞同短语（如“你说的很对”、“很赞同你的观点”等）进行拟人回复。
+   - 内置去重记忆库（`replied_comments.json`），绝不重复回复同一个人或回复自己，每次回复附带 12~25 秒随机防风控停顿。
+5. **磁盘空间极致瘦身（即发即清，专为小硬盘 VPS 优化）**：
    - **即发即清（Real-time Cleanup）**：帖子一旦成功发布至 Threads，系统立即自动删除本地保存的 MP4 视频与高清图片附件，不浪费一兆磁盘。
    - **后台 6 小时自动巡检**：常驻服务每 6 小时自动全盘扫描 `media_cache`，清理孤立遗留文件。
    - **每日抓取前净盘**：每天早晨生成新一天队列前，自动深度清空历史旧缓存，杜绝历史积压。
    - **支持 Telegram 一键清理**：手机发送 `/clean` 即可随时主动触发清理并查看释放的 MB 数。
-5. **轻量低消耗**：
+6. **轻量低消耗**：
    - 深度优化 Linux VPS 资源，配备专用内存防崩参数与 Swap 自动构建，即便在 **1核 / 1GB RAM / 10GB 硬盘** 的超低配云服务器上也能长期极稳运行。
 
 ---
@@ -41,8 +45,10 @@ x-to-threads-bot/
 ├── x_home_collector.py    # X 信息流采集器（热度计算、中文过滤与广告拦截）
 ├── twikit_patch.py        # X Webpack chunk 适配、容错补丁与索引兜底
 ├── tg_sender.py           # Telegram 消息卡片排版与分发模块
+├── tg_listener.py         # Telegram 交互监听器（支持推文链接插队与 /status /clean）
 ├── queue_manager.py       # 媒体资源下载器、24小时排期生成与队列管理器
 ├── threads_poster.py      # 【程序二】Threads 自动化发帖核心（基于 Playwright）
+├── threads_auto_reply.py  # 【程序三】Threads 主页评论自动巡查与粉丝互动机器人
 ├── setup_vps.sh           # Ubuntu 24.04 VPS 一键极速部署脚本
 ├── requirements.txt       # Python 依赖清单
 ├── .env.example           # 环境变量与账号凭据模板
@@ -74,22 +80,31 @@ x-to-threads-bot/
 | **测试发布队列下一条** | `python threads_poster.py --post-now` | 立即提取队列中的下一个待发任务（含图文/视频）发布至 Threads 并自动清理缓存 |
 | **手动平摊重排队列** | `python threads_poster.py --reschedule` | 将当前所有剩余待发任务按未来 24 小时均匀重新排布并启动监听 |
 
-### 3. Telegram 机器人互动指令（无需登录服务器）
+### 3. 主页评论自动巡查与粉丝互动（threads_auto_reply.py）
+| 操作 | 命令 | 说明 |
+| :--- | :--- | :--- |
+| **立即单次巡查并回复** | `python threads_auto_reply.py --run-now` | 立即巡查主页最新 5 条帖子，为评论数 $\le 10$ 的帖子随机回复 1~2 位粉丝 |
+| **仅模拟巡查（不真实发送）** | `python threads_auto_reply.py --dry-run` | 仅抓取和分析主页帖子评论区，并在控制台展示选中的粉丝和回复话术 |
+| **自定义评论上限阈值** | `python threads_auto_reply.py --threshold 15` | 当评论数 $\le 15$ 时才触发回复（默认 10） |
+| **常驻守护后台巡查** | `python threads_auto_reply.py --daemon --interval-hours 4` | 后台常驻，每 4 小时自动巡查一次 |
+
+### 4. Telegram 机器人互动指令（无需登录服务器）
 直接在 Telegram 聊天窗口中向机器人发送：
 - **分享推文链接**（如 `https://x.com/username/status/12345678`）：机器人自动下载媒体并插队发布至 Threads！
 - `/status`：查看当天已发布和待发布的队列清单及时间表。
 - `/clean`：一键清理所有已发推文占用的图片与视频，并回复释放的磁盘 MB 空间。
 - `/help`：获取帮助与功能说明。
 
-### 4. 定时任务管理（Crontab）
+### 5. 定时任务管理（Crontab）
 | 操作 | 命令 | 说明 |
 | :--- | :--- | :--- |
 | **编辑定时任务配置** | `crontab -e` | 打开系统定时任务编辑器 |
 | **查看已安装的定时任务** | `crontab -l` | 查看当前正在生效的 cron 清单 |
 | **查看抓取执行历史日志** | `cat x_bot_daily.log` 或 `tail -n 50 x_bot_daily.log` | 查看每天早上 08:00 任务的抓取与推送日志 |
 | **(可选) 凌晨定时深度清理媒体** | `0 3 * * * ... --clean-media` | 每天凌晨 03:00 自动清理一次媒体缓存（详见后文） |
+| **(推荐) 评论自动巡查 Crontab** | `0 */4 * * * ... threads_auto_reply.py --run-now` | 每 4 小时自动巡查一次主页帖子并互动 |
 
-### 5. Threads 常驻后台服务管理（Systemd）
+### 6. Threads 常驻后台服务管理（Systemd）
 | 操作 | 命令 | 说明 |
 | :--- | :--- | :--- |
 | **查看发帖服务实时状态** | `sudo systemctl status threads-poster` | 查看服务是否处于 active (running) |

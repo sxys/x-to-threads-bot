@@ -14,6 +14,7 @@ cookies.json
 threads_cookies.json
 threads_queue.json
 history_tweets.json
+replied_comments.json
 media_cache/
 *.pem
 
