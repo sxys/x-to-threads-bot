@@ -376,7 +376,15 @@ def main():
     parser.add_argument("--add-tweet", type=str, help="手动传入一个 X 推文链接或 ID，以最高优先级插队排期")
     parser.add_argument("--reschedule", action="store_true", help="启动时先强制重新平摊排布待发任务，再进入 24 小时常驻监听服务")
     parser.add_argument("--interval", type=int, default=20, help="两次发帖之间的最小安全冷却时间（分钟，默认 20）")
+    parser.add_argument("--clear-queue", action="store_true", help="一键清空所有尚未发布的任务并删除对应媒体缓存，释放磁盘空间")
     args = parser.parse_args()
+
+    if args.clear_queue:
+        logger.info("正在清空待发队列与媒体缓存...")
+        res = QueueManager.clear_queue()
+        print(f"✅ 已成功清空 {res['cleared_pending_count']} 个未发布任务，并释放了 {res['freed_mb']:.2f} MB 磁盘空间！")
+        print("当前待发队列已重置为空，等待下一次定时抓取或手动抓取。")
+        return
 
     if args.clean_media:
         logger.info("正在执行本地媒体缓存清理...")

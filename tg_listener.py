@@ -92,7 +92,21 @@ class TelegramListener:
             await self.send_reply(client, sender_chat, msg)
             return
 
-        # 3. 帮助提示
+        # 3. 清空待发队列指令
+        if text.lower() in ("/clear", "/reset", "清空队列", "重置队列"):
+            result = QueueManager.clear_queue()
+            msg = (
+                f"🗑️ <b>【待发队列已成功清空】</b>\n"
+                f"────────────────────────\n"
+                f"已清空未发任务: <b>{result['cleared_pending_count']}</b> 个\n"
+                f"已释放磁盘空间: <b>{result['freed_mb']:.2f} MB</b>\n"
+                f"────────────────────────\n"
+                f"当前队列已重置为空，等待下一次定时抓取或手动抓取。"
+            )
+            await self.send_reply(client, sender_chat, msg)
+            return
+
+        # 4. 帮助提示
         if text.lower() in ("/help", "/start", "帮助"):
             help_msg = (
                 f"👋 <b>您好！我是您的 X & Threads 助手</b>\n\n"
@@ -100,7 +114,8 @@ class TelegramListener:
                 f"直接向我发送任何 <b>X (Twitter) 帖子链接</b>，我将立即自动抓取文案、高清图片或视频，"
                 f"并以<b>最高优先级插队</b>安排在下一个发帖窗口发布到 Threads，后续任务自动顺延！\n\n"
                 f"🔹 发送 <code>/status</code> 或 <code>状态</code> 可随时查看排期进度。\n"
-                f"🔹 发送 <code>/clean</code> 或 <code>清理</code> 可随时清理已发推文的图片和视频缓存，释放 VPS 硬盘空间。"
+                f"🔹 发送 <code>/clean</code> 或 <code>清理</code> 可随时清理已发帖子的本地媒体缓存。\n"
+                f"🔹 发送 <code>/clear</code> 或 <code>清空队列</code> 可清空当前所有未发任务并回收磁盘。"
             )
             await self.send_reply(client, sender_chat, help_msg)
             return

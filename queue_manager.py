@@ -359,6 +359,41 @@ class QueueManager:
         }
 
     @classmethod
+    def clear_queue(cls, clear_published: bool = False) -> Dict[str, Any]:
+        """
+        一键清空待发队列并清理本地图片/视频缓存，释放磁盘空间：
+        clear_published: 是否连同已发布的历史记录也清空（默认保留最近的已发布记录用于状态展示）
+        """
+        queue = cls.load_queue()
+        pending_items = [i for i in queue if i.get("status") == "pending"]
+        published_items = [i for i in queue if i.get("status") != "pending"]
+
+        freed_bytes = 0
+        for item in pending_items:
+            task_id = str(item.get("id"))
+            files = item.get("media_files") or []
+            freed_bytes += cls.delete_task_media(task_id, files)
+
+        if clear_published:
+            for item in published_items:
+                task_id = str(item.get("id"))
+                files = item.get("media_files") or []
+                freed_bytes += cls.delete_task_media(task_id, files)
+            cls.save_queue([])
+        else:
+            cls.save_queue(published_items)
+
+        orphan_res = cls.cleanup_media_cache(clean_orphans=True)
+        freed_bytes += orphan_res.get("freed_bytes", 0)
+
+        mb_freed = freed_bytes / (1024 * 1024)
+        logger.info(f"已清空 {len(pending_items)} 个待发任务，回收磁盘空间 {mb_freed:.2f} MB。")
+        return {
+            "cleared_pending_count": len(pending_items),
+            "freed_mb": mb_freed
+        }
+
+    @classmethod
     async def insert_priority_task(cls, tweet, tweet_id: str) -> Dict[str, Any]:
         """
         将用户手动分享的推文作为最高优先级插队任务：
