@@ -176,18 +176,81 @@ class ThreadsPublisher:
                     await page.screenshot(path="threads_last_post_result.png")
                     raise Exception("发帖弹窗在点击 Post 后仍未消失，可能触发了 Meta 限制，请查看 threads_last_post_result.png")
 
-                # 6. 等待后台媒体网络提交完成（等待页面底部的 'Posting...' 提示彻底完成）
-                logger.info("正在等待后台媒体网络入库完成 (检测 Posting 提示)...")
-                for wait_toast in range(30):
-                    has_toast = await page.evaluate("""() => {
-                        const all = Array.from(document.querySelectorAll('div, span'));
-                        return all.some(el => (el.innerText || "").trim().startsWith('Posting'));
-                    }""")
-                    if not has_toast:
-                        logger.info("后台媒体网络已全部提交完毕！")
-                        break
-                    await page.wait_for_timeout(1000)
+                # 6. 等待后台媒体网络提交完成（严密监听中英文 Toast 状态与网络静默）
+                is_video = any(f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')) for f in media_files) if media_files else False
+                max_wait_seconds = 180 if is_video else 35
+                logger.info(f"正在等待媒体后台网络入库完成 (附件类型: {'视频' if is_video else '图片/纯文本'}，最长等待 {max_wait_seconds} 秒)...")
 
+                # 先缓冲等待 2 秒让前端提示框完成挂载
+                await page.wait_for_timeout(2000)
+
+                upload_started = False
+                upload_finished = False
+
+                for wait_i in range(max_wait_seconds):
+                    # 获取页面底部所有提示文案
+                    toast_status = await page.evaluate("""() => {
+                        const all = Array.from(document.querySelectorAll('div, span, p'));
+                        let posting = false;
+                        let posted = false;
+                        let failed = false;
+                        let failMsg = '';
+
+                        for (const el of all) {
+                            const text = (el.innerText || "").trim();
+                            if (!text) continue;
+                            if (text.startsWith('Posting') || text.startsWith('正在发布') || text.startsWith('發布中') || text.startsWith('Uploading') || text.startsWith('正在上傳')) {
+                                posting = true;
+                            }
+                            if (text === 'Posted' || text === '已发布' || text === '已發布' || text.startsWith('View') || text.startsWith('查看')) {
+                                posted = true;
+                            }
+                            if (text.includes("Couldn't post") || text.includes("無法發布") || text.includes("无法发布") || text.includes("出错了") || text.includes("Something went wrong")) {
+                                failed = true;
+                                failMsg = text;
+                            }
+                        }
+                        return { posting, posted, failed, failMsg };
+                    }""")
+
+                    if toast_status.get("failed"):
+                        await page.screenshot(path="threads_last_post_failed.png")
+                        raise Exception(f"Threads 网页提示发布失败: {toast_status.get('failMsg')}，已截图 threads_last_post_failed.png")
+
+                    if toast_status.get("posting"):
+                        upload_started = True
+                        if wait_i % 5 == 0:
+                            logger.info(f"媒体正在后台上传中 (已等待 {wait_i+2} 秒)...")
+                        await page.wait_for_timeout(1000)
+                        continue
+
+                    # 如果检测到明确的成功提示
+                    if toast_status.get("posted"):
+                        logger.info(f"检测到 Threads '已发布' (Posted) 状态提示 (耗时 {wait_i+2} 秒)！")
+                        upload_finished = True
+                        break
+
+                    # 如果之前已经出现过 posting，现在 posting 消失了且没有失败提示，说明上传已完成
+                    if upload_started and not toast_status.get("posting"):
+                        logger.info(f"后台媒体上传已结束 (Posting 状态已解除，耗时约 {wait_i+2} 秒)！")
+                        upload_finished = True
+                        break
+
+                    # 如果尚未检测到 posting，前 10 秒继续轮询等待以防前端延迟
+                    if not upload_started and wait_i < 10:
+                        await page.wait_for_timeout(1000)
+                        continue
+
+                    # 超过 10 秒没有出现 posting 且没有失败，尝试检测网络空闲
+                    if not upload_started and wait_i >= 10:
+                        try:
+                            await page.wait_for_load_state("networkidle", timeout=5000)
+                        except Exception:
+                            pass
+                        upload_finished = True
+                        break
+
+                # 额外多等待 3 秒，确保 WebSocket / HTTP 连接完全平稳落库
                 await page.wait_for_timeout(3000)
                 await page.screenshot(path="threads_last_post_result.png")
                 logger.info("✅ 帖子已成功在 Threads 上线！")
