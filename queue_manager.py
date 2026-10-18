@@ -394,6 +394,78 @@ class QueueManager:
         }
 
     @classmethod
+    def delete_task(cls, target_index: int = None, tweet_id: str = None) -> Dict[str, Any]:
+        """
+        从队列中单独删除指定的某一个待发任务：
+        1. 检查任务是否存在，且状态必须为 pending（未发布的才可删除）
+        2. 删除该任务在本地下载的图片/视频媒体文件，回收磁盘空间
+        3. 自动保持发帖节奏（Slot Shifting）：
+           - 剩余的待发任务依次向前挪动占用已有时间槽，填补被删任务留下的空缺
+           - 保证每 30 分钟发帖的既定节奏完全不受影响，不留空档
+        4. 重新排布序号 index，保存队列文件
+        5. 保留历史去重记录，避免下次定时抓取再次将该推文抓回
+        """
+        queue = cls.load_queue()
+        if not queue:
+            return {"ok": False, "msg": "当前队列为空，没有可删除的任务。"}
+
+        # 查找目标任务
+        target_idx = -1
+        for idx, item in enumerate(queue):
+            if target_index is not None and item.get("index") == target_index:
+                target_idx = idx
+                break
+            if tweet_id is not None and str(item.get("id")) == str(tweet_id):
+                target_idx = idx
+                break
+
+        if target_idx == -1:
+            return {"ok": False, "msg": f"未在队列中找到序号为 #{target_index} 的任务。"}
+
+        target_item = queue[target_idx]
+        if target_item.get("status") != "pending":
+            return {
+                "ok": False,
+                "msg": f"任务 #{target_item.get('index')} 当前状态为【{target_item.get('status')}】，只有未发布的待发任务才可删除。"
+            }
+
+        # 1. 清理该任务的本地媒体缓存
+        task_id = str(target_item.get("id"))
+        files = target_item.get("media_files") or []
+        freed_bytes = cls.delete_task_media(task_id, files)
+        freed_mb = freed_bytes / (1024 * 1024)
+
+        # 2. 提取当前所有待发任务的时间槽，准备向前补位
+        all_pending = [i for i in queue if i.get("status") == "pending"]
+        pending_slots = [i["scheduled_time"] for i in all_pending]
+
+        # 3. 从队列中移除目标项
+        deleted_item = queue.pop(target_idx)
+
+        # 4. 剩余待发任务按原时间槽依次往前补位（保持 30 分钟发布节奏不出现 1 小时断档）
+        remaining_pending = [i for i in queue if i.get("status") == "pending"]
+        for rank, p_item in enumerate(remaining_pending):
+            if rank < len(pending_slots):
+                p_item["scheduled_time"] = pending_slots[rank]
+
+        # 5. 重新编号 index
+        for idx, item in enumerate(queue):
+            item["index"] = idx + 1
+
+        cls.save_queue(queue)
+
+        logger.info(f"🗑️ 已成功从待发队列删除任务 #{target_item.get('index')} (推文 ID: {task_id})，释放磁盘 {freed_mb:.2f} MB。")
+        return {
+            "ok": True,
+            "deleted_index": target_item.get("index"),
+            "tweet_id": task_id,
+            "text": target_item.get("text", ""),
+            "author": target_item.get("author", ""),
+            "freed_mb": freed_mb,
+            "remaining_pending_count": len(remaining_pending)
+        }
+
+    @classmethod
     async def insert_priority_task(cls, tweet, tweet_id: str) -> Dict[str, Any]:
         """
         将用户手动分享的推文作为最高优先级插队任务：

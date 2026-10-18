@@ -377,7 +377,22 @@ def main():
     parser.add_argument("--reschedule", action="store_true", help="启动时先强制重新平摊排布待发任务，再进入 24 小时常驻监听服务")
     parser.add_argument("--interval", type=int, default=20, help="两次发帖之间的最小安全冷却时间（分钟，默认 20）")
     parser.add_argument("--clear-queue", action="store_true", help="一键清空所有尚未发布的任务并删除对应媒体缓存，释放磁盘空间")
+    parser.add_argument("--delete", type=int, help="从待发队列中单独删除指定序号的任务（例如 --delete 16）")
     args = parser.parse_args()
+
+    if args.delete is not None:
+        target_no = args.delete
+        logger.info(f"正在尝试从队列删除任务 #{target_no}...")
+        res = QueueManager.delete_task(target_index=target_no)
+        if res.get("ok"):
+            print(f"✅ 成功从待发队列删除任务 #{res['deleted_index']}！")
+            print(f"文案: {res['text'][:60]}...")
+            print(f"剩余待发任务: {res['remaining_pending_count']} 条。后续任务已自动向前补位，保持每 30 分钟发布节奏不变。")
+            if res.get("freed_mb", 0) > 0:
+                print(f"已清理媒体缓存，释放 {res['freed_mb']:.2f} MB。")
+        else:
+            print(f"❌ 删除失败: {res.get('msg')}")
+        return
 
     if args.clear_queue:
         logger.info("正在清空待发队列与媒体缓存...")

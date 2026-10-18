@@ -55,7 +55,7 @@ class TelegramListener:
             return
 
         # 1. 查询队列状态快捷指令
-        if text.lower() in ("/status", "状态", "队列", "进度"):
+        if text.lower() in ("/status", "状态", "队列", "进度", "/list", "/queue", "列表", "待发"):
             queue = QueueManager.load_queue()
             if not queue:
                 await self.send_reply(client, sender_chat, "📋 当前没有排队的任务。")
@@ -66,6 +66,21 @@ class TelegramListener:
             next_task = pending[0] if pending else None
 
             next_info = f"⏰ <b>下一条待发</b>: <code>{next_task['scheduled_time']}</code>\n文案: {next_task['text'][:40]}..." if next_task else "🎉 所有任务已全部发布完毕！"
+
+            pending_preview = ""
+            if pending:
+                pending_preview = "\n\n<b>📋 近期待发任务列表</b>:\n"
+                for p in pending[:8]:
+                    m_tag = "📷" if p.get("media_type") == "image" else ("🎬" if p.get("media_type") == "video" else "📝")
+                    t_str = p.get("scheduled_time", "")
+                    hm = t_str[11:16] if len(t_str) >= 16 else t_str
+                    clean_txt = (p.get("text") or "").replace("\n", " ")[:26]
+                    clean_txt = clean_txt.replace("<", "&lt;").replace(">", "&gt;")
+                    pending_preview += f"• <code>#{p['index']}</code> [{hm}] {m_tag} {clean_txt}...\n"
+                if len(pending) > 8:
+                    pending_preview += f"<i>(还有 {len(pending) - 8} 条待发任务未展开)</i>\n"
+                pending_preview += "\n💡 <i>如需取消某条，直接发送: <code>/del 序号</code> (如 <code>/del 16</code>)</i>"
+
             msg = (
                 f"📊 <b>【Threads 队列当前状态】</b>\n"
                 f"────────────────────────\n"
@@ -73,6 +88,7 @@ class TelegramListener:
                 f"已发布: <b>{len(published)}</b> 条 | 待发布: <b>{len(pending)}</b> 条\n"
                 f"────────────────────────\n"
                 f"{next_info}"
+                f"{pending_preview}"
             )
             await self.send_reply(client, sender_chat, msg)
             return
@@ -106,14 +122,47 @@ class TelegramListener:
             await self.send_reply(client, sender_chat, msg)
             return
 
-        # 4. 帮助提示
+        # 4. 单独删除队列中的某一条待发任务
+        del_match = re.search(r'^(?:/del|/delete|del|delete|删除|删掉)\s*#?(\d+)', text, re.IGNORECASE) or re.search(r'^#?(\d+)\s*(?:删除|删掉)$', text, re.IGNORECASE)
+        if del_match:
+            task_no = int(del_match.group(1))
+            res = QueueManager.delete_task(target_index=task_no)
+            if res.get("ok"):
+                raw_text = res.get("text", "")
+                snippet = raw_text[:70].replace("\n", " ").replace("<", "&lt;").replace(">", "&gt;")
+                freed_mb = res.get("freed_mb", 0)
+                freed_info = f"\n🧹 <b>释放空间</b>: {freed_mb:.2f} MB 本地媒体" if freed_mb > 0 else ""
+                reply_msg = (
+                    f"🗑️ <b>【待发任务已成功删除】</b>\n"
+                    f"────────────────────────\n"
+                    f"📌 <b>已删除任务</b>: <code>#{res['deleted_index']}</code>\n"
+                    f"📝 <b>推文内容</b>: {snippet}...\n"
+                    f"📊 <b>剩余待发</b>: <b>{res['remaining_pending_count']}</b> 条{freed_info}\n"
+                    f"────────────────────────\n"
+                    f"<i>💡 后续所有待发任务已自动向前平移补位，保持每 30 分钟发帖节奏不变。</i>"
+                )
+                await self.send_reply(client, sender_chat, reply_msg)
+            else:
+                await self.send_reply(client, sender_chat, f"❌ <b>删除失败</b>: {res.get('msg')}")
+            return
+
+        if text.lower() in ("/del", "/delete", "删除", "删掉"):
+            await self.send_reply(
+                client,
+                sender_chat,
+                "⚠️ 请在指令后指定要删除的任务序号，例如：\n• <code>/del 16</code>\n• <code>删除 16</code>\n\n💡 可发送 <code>/status</code> 查看待发任务列表与序号。"
+            )
+            return
+
+        # 5. 帮助提示
         if text.lower() in ("/help", "/start", "帮助"):
             help_msg = (
                 f"👋 <b>您好！我是您的 X & Threads 助手</b>\n\n"
                 f"💡 <b>使用方式</b>：\n"
                 f"直接向我发送任何 <b>X (Twitter) 帖子链接</b>，我将立即自动抓取文案、高清图片或视频，"
                 f"并以<b>最高优先级插队</b>安排在下一个发帖窗口发布到 Threads，后续任务自动顺延！\n\n"
-                f"🔹 发送 <code>/status</code> 或 <code>状态</code> 可随时查看排期进度。\n"
+                f"🔹 发送 <code>/status</code> 或 <code>队列</code> 可查看排期进度与待发列表。\n"
+                f"🔹 发送 <code>/del 序号</code> (如 <code>/del 16</code> 或 <code>删除 16</code>) 可单独删除某条待发任务。\n"
                 f"🔹 发送 <code>/clean</code> 或 <code>清理</code> 可随时清理已发帖子的本地媒体缓存。\n"
                 f"🔹 发送 <code>/clear</code> 或 <code>清空队列</code> 可清空当前所有未发任务并回收磁盘。"
             )
