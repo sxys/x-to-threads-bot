@@ -161,10 +161,10 @@ class TelegramListener:
                 f"👤 <b>作者</b>: {item['author']}\n"
                 f"📝 <b>文案</b>: {item['text'][:90]}...\n"
                 f"🎬 <b>媒体</b>: {media_desc}\n"
-                f"⏰ <b>预计发布时间</b>: <code>{result['scheduled_time']}</code> (下一个安全发帖窗口)\n"
+                f"⏰ <b>预计发布时间</b>: <code>{result['scheduled_time']}</code> (原定下一个发帖窗口，优先发布)\n"
                 f"📊 <b>当前队列概况</b>: 当天总数已增至 <b>{result['total_count']}</b> 条（剩余待发 {result['pending_count']} 条）\n"
                 f"────────────────────────\n"
-                f"<i>已自动重新均匀排布后续待发任务，发完为止。</i>"
+                f"<i>保持原定每 30 分钟发帖节奏不变，其余未发任务依次顺延。</i>"
             )
             await self.send_reply(client, sender_chat, success_msg)
 

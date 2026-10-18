@@ -423,15 +423,39 @@ class QueueManager:
         media_info = await cls.download_tweet_media(tweet, tweet_id_str)
         cleaned_text = cls.clean_tweet_text(getattr(tweet, "full_text", "") or getattr(tweet, "text", ""))
 
-        # 2. 计算选项 A：下一个可发布的避峰安全时间窗口（发帖防抖冷却至少 20 分钟）
+        # 2. 确定发帖时间：保持原有发帖节奏（每 30 分钟发一条），不重置时间起点
         now = datetime.now()
-        last_pub = cls.get_last_published_time()
-        if last_pub:
-            elapsed_mins = (now - last_pub).total_seconds() / 60
-            safe_wait = max(2, int(20 - elapsed_mins))
+        published_items = [i for i in queue if i.get("status") != "pending"]
+        other_pending = [i for i in queue if i.get("status") == "pending"]
+
+        if other_pending:
+            # 存在已有待发任务时，直接占用原本排在最先的时间槽（下一个就发它）
+            existing_slots = [item["scheduled_time"] for item in other_pending]
+            priority_time_str = existing_slots[0]
+
+            # 后续原有的待发任务依次顺延占用下一个已有时间槽，保持节奏丝毫不乱
+            for rank in range(len(other_pending)):
+                if rank + 1 < len(existing_slots):
+                    other_pending[rank]["scheduled_time"] = existing_slots[rank + 1]
+                else:
+                    # 最后一个任务顺延 30 分钟（保持每半小时一条的节奏）
+                    try:
+                        last_dt = datetime.strptime(existing_slots[-1], "%Y-%m-%d %H:%M:%S")
+                    except Exception:
+                        last_dt = now + timedelta(minutes=30 * len(other_pending))
+                    jitter = random.randint(-2, 2)
+                    new_last_time = last_dt + timedelta(minutes=30 + jitter)
+                    other_pending[rank]["scheduled_time"] = new_last_time.strftime("%Y-%m-%d %H:%M:%S")
         else:
-            safe_wait = 2
-        priority_time = now + timedelta(minutes=safe_wait)
+            # 队列当前为空时，按上次发帖时间顺延 30 分钟（或至少 2 分钟后）
+            last_pub = cls.get_last_published_time()
+            if last_pub:
+                target_dt = last_pub + timedelta(minutes=30)
+                if target_dt < now + timedelta(minutes=2):
+                    target_dt = now + timedelta(minutes=2)
+            else:
+                target_dt = now + timedelta(minutes=2)
+            priority_time_str = target_dt.strftime("%Y-%m-%d %H:%M:%S")
 
         user = getattr(tweet, "user", None)
         screen_name = getattr(user, "screen_name", "i") if user else "i"
@@ -445,25 +469,12 @@ class QueueManager:
             "text": cleaned_text,
             "media_type": media_info["type"],
             "media_files": media_info["files"],
-            "scheduled_time": priority_time.strftime("%Y-%m-%d %H:%M:%S"),
+            "scheduled_time": priority_time_str,
             "status": "pending",
             "published_at": None,
             "error": None,
             "is_priority": True
         }
-
-        # 3. 优先级插入队列：已发布任务 + [本次插队任务] + 后续其余待发任务
-        published_items = [i for i in queue if i.get("status") != "pending"]
-        other_pending = [i for i in queue if i.get("status") == "pending"]
-
-        # 后续待发任务从 priority_time + 30 分钟开始顺延，每隔 30 分钟发布一条
-        if other_pending:
-            subsequent_start = priority_time + timedelta(minutes=30)
-            for rank, item in enumerate(other_pending):
-                offset = int(rank * 30)
-                jitter = random.randint(-2, 2)
-                t_time = subsequent_start + timedelta(minutes=max(0, offset + jitter))
-                item["scheduled_time"] = t_time.strftime("%Y-%m-%d %H:%M:%S")
 
         full_queue = published_items + [new_item] + other_pending
         for idx, item in enumerate(full_queue):
