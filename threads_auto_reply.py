@@ -460,13 +460,9 @@ class ThreadsAutoReplier:
                     total_comments_count = len(comments)
                     logger.info(f"该帖子检测到粉丝评论数: {total_comments_count} 条 (主帖文案: '{post_text[:30]}...')")
 
-                    # 条件过滤：只在评论很少（1 ~ max_comments_threshold 条之间，默认 <= 10）时才进行回复
+                    # 条件过滤：只要有评论就参与互动；无评论则跳过
                     if total_comments_count == 0:
                         logger.info("ℹ️ 当前帖子暂无粉丝评论，跳过。")
-                        continue
-
-                    if total_comments_count > self.max_comments_threshold:
-                        logger.info(f"ℹ️ 该帖子评论数 ({total_comments_count}) 已超过上限 ({self.max_comments_threshold} 条)，互动已足够活跃，无需自动回复。")
                         continue
 
                     summary["posts_eligible"] += 1
@@ -493,10 +489,11 @@ class ThreadsAutoReplier:
                         logger.info("本帖所有现有粉丝评论均已在历史库中回复过，跳过。")
                         continue
 
-                    # 每个帖子只随机回复 1~2 个未回复的粉丝
-                    target_count = min(self.max_replies_per_post, len(candidates))
+                    # 动态回复策略：评论少于或等于 10 条回复 1 个；评论大于 10 条回复 2 个
+                    target_quota = 1 if total_comments_count <= self.max_comments_threshold else 2
+                    target_count = min(target_quota, len(candidates))
                     selected_candidates = random.sample(candidates, target_count)
-                    logger.info(f"🎯 选定回复其中 {len(selected_candidates)} 条粉丝评论：")
+                    logger.info(f"🎯 帖子总评论 {total_comments_count} 条 (动态配额: {target_quota} 人)，选定回复其中 {len(selected_candidates)} 条粉丝评论：")
 
                     for t_idx, target in enumerate(selected_candidates):
                         # 如果同一个帖子回复多位粉丝，回复完第一位后页面停留在其子线程，必须重新导航回帖子主页
@@ -611,7 +608,7 @@ def main():
     parser = argparse.ArgumentParser(description="Threads 主页博主帖子评论自动巡查与轻量互动机器人")
     parser.add_argument("--run-now", action="store_true", help="立即执行单次巡查与回复")
     parser.add_argument("--dry-run", action="store_true", help="仅巡查并展示匹配到的评论，不执行真实回复点击")
-    parser.add_argument("--threshold", type=int, default=10, help="触发回复的评论数上限（默认 10 条以内）")
+    parser.add_argument("--threshold", type=int, default=10, help="评论分档阈值：<= 阈值回复 1 个，> 阈值回复 2 个（默认 10）")
     parser.add_argument("--per-post", type=int, default=2, help="每个帖子最多回复人数（默认 1~2 人）")
     parser.add_argument("--limit", type=int, default=12, help="巡查自己最近发布的帖子数量（默认 12 条，覆盖过去 6 小时内发布的帖子）")
     parser.add_argument("--daemon", action="store_true", help="以常驻后台模式运行，定期巡查")
