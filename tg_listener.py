@@ -8,6 +8,9 @@ from queue_manager import QueueManager
 from x_home_collector import XHomeCollector
 
 logger = logging.getLogger("TGListener")
+# 静音高频轮询的 http 日志
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 TWEET_URL_REGEX = re.compile(r'https?://(?:x\.com|twitter\.com)/\w+/status/(\d+)', re.IGNORECASE)
 

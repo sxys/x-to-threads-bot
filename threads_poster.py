@@ -23,6 +23,9 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [ThreadsPoster] %(message)s"
 )
 logger = logging.getLogger("ThreadsPoster")
+# 静音 httpx/httpcore 的高频轮询日志，防止长期运行撑大 systemd journal 磁盘
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 COOKIE_FILE = os.path.join(BASE_DIR, "threads_cookies.json")
 

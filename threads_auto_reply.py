@@ -21,6 +21,8 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] [ThreadsAutoReply] %(message)s"
 )
 logger = logging.getLogger("ThreadsAutoReply")
+logging.getLogger("httpx").setLevel(logging.WARNING)
+logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 # 默认亲和、赞同的简短回复短语库
 DEFAULT_REPLY_PHRASES = [
