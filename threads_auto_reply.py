@@ -336,26 +336,37 @@ class ThreadsAutoReplier:
                     summary["posts_checked"] += 1
 
                     await page.goto(post_url, timeout=35000, wait_until="domcontentloaded")
-                    await page.wait_for_timeout(4000)
+                    await page.wait_for_timeout(3000)
+                    # 微幅下滚 400px 触发视口内评论的懒加载渲染
+                    await page.mouse.wheel(0, 400)
+                    await page.wait_for_timeout(2000)
 
                     # 提取该帖的主帖正文与所有真实粉丝评论（深度清洗，精准定位真实文本）
                     post_data = await page.evaluate("""({myUser, postUrl}) => {
                         const mPost = postUrl.match(/\\/post\\/([A-Za-z0-9_-]+)/);
                         const myPostId = mPost ? mPost[1] : '';
 
+                        const cleanText = (str) => {
+                            if (!str) return '';
+                            // 彻底剥离 Threads 在外语/海外 VPS 环境下自动追加的 Translate / 翻译 后缀
+                            return str.replace(/\\s*(?:Translate|翻译|翻譯)\\s*$/i, '').trim();
+                        };
+
                         const isNoise = (str) => {
                             if (!str) return true;
-                            const s = str.trim();
+                            const s = cleanText(str);
                             if (s.length < 2) return true;
                             if (/^\\d+$/.test(s)) return true; // 纯数字（点赞数、评论数）
-                            if (/^(?:·\\s*)?\\d+\\s*[hdmwy秒分时天周](?:\\s*ago)?$/i.test(s)) return true; // 时间戳 (如 10m, 1h, · 2d)
+                            if (/^(?:·\\s*)?\\d+\\s*[hdmwy秒分时天周](?:\\s*ago)?$/i.test(s)) return true; // 相对时间戳 (如 10m, 1h, · 2d)
+                            if (/^(?:\\d{1,2}[\\/\\-]\\d{1,2}[\\/\\-]\\d{2,4}|\\d{4}[\\/\\-]\\d{1,2}[\\/\\-]\\d{1,2})$/.test(s)) return true; // 绝对日期 (如 09/18/26)
                             const lower = s.toLowerCase();
-                            const noiseWords = [
-                                'view activity', '查看动态', 'no replies yet', 'translate', '翻译', 
-                                'reply', '回复', '回覆', 'follow', '关注', 'liked by', 'likes', '赞', 
-                                'share', '分享', 'repost', '转帖', 'reposts', 'comments', 'views'
+                            const exactNoise = [
+                                'view activity', '查看动态', 'no replies yet', 'translate', '翻译', '翻譯',
+                                'reply', '回复', '回覆', 'follow', '关注', 'liked by', 'likes', '赞', '讚',
+                                'share', '分享', 'repost', '转帖', '轉貼', 'reposts', 'comments', 'views',
+                                'thread', 'threads', 'related threads', 'more posts'
                             ];
-                            if (noiseWords.some(w => lower === w || lower.includes(w))) return true;
+                            if (exactNoise.includes(lower)) return true;
                             return false;
                         };
 
@@ -365,14 +376,14 @@ class ThreadsAutoReplier:
                         if (metaDesc && metaDesc.content) {
                             let raw = metaDesc.content.trim();
                             const m = raw.match(/:\\s*["“](.*)["”]$/s);
-                            postText = m ? m[1].trim() : raw;
+                            postText = cleanText(m ? m[1].trim() : raw);
                         }
 
                         if (!postText || postText.length < 6 || isNoise(postText)) {
                             const allSpans = Array.from(document.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
                             let candidatePostTexts = [];
                             for (const s of allSpans.slice(0, 45)) {
-                                const t = (s.innerText || '').trim();
+                                const t = cleanText((s.innerText || '').trim());
                                 if (t.length >= 6 && !isNoise(t) && t.toLowerCase() !== myUser.toLowerCase()) {
                                     candidatePostTexts.push(t);
                                 }
@@ -388,14 +399,26 @@ class ThreadsAutoReplier:
                         const results = [];
                         const seenAuthors = new Set();
 
+                        // 查找“相关串文”分界线元素，避免将底部的推荐帖子误当成当前帖的评论
+                        const relatedDivider = Array.from(document.querySelectorAll('span, h2, h3, div')).find(el => {
+                            const t = (el.innerText || '').trim().toLowerCase();
+                            return t === 'related threads' || t === '相关串文' || t === '相關串文' || t === 'more posts' || t === '更多串文';
+                        });
+
                         for (const a of allPostLinks) {
+                            // 如果遍历已越过“相关串文”推荐边界，直接退出评论提取
+                            if (relatedDivider && (relatedDivider.compareDocumentPosition(a) & Node.DOCUMENT_POSITION_FOLLOWING)) {
+                                break;
+                            }
+
                             const href = a.getAttribute('href') || '';
                             if (myPostId && href.includes(myPostId)) continue; // 排除主帖自身的链接
 
-                            const m = href.match(/^\\/@([A-Za-z0-9._]+)/);
+                            // 兼容绝对 URL 和相对 URL
+                            const m = href.match(/@([A-Za-z0-9._]+)/);
                             const author = m ? m[1] : 'unknown';
-                            if (author === myUser || author === 'unknown') continue;
-                            if (seenAuthors.has(author)) continue;
+                            if (author.toLowerCase() === myUser.toLowerCase() || author === 'unknown') continue;
+                            if (seenAuthors.has(author.toLowerCase())) continue;
 
                             // 向上查找评论卡片容器
                             let card = a.closest('div[data-pressable-container="true"]') || a.parentElement;
@@ -408,7 +431,8 @@ class ThreadsAutoReplier:
                             if (card) {
                                 const spans = Array.from(card.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
                                 for (const s of spans) {
-                                    const t = (s.innerText || '').trim();
+                                    const raw = (s.innerText || '').trim();
+                                    const t = cleanText(raw);
                                     if (t && t !== author && t !== `@${author}` && !isNoise(t)) {
                                         candidateTexts.push(t);
                                     }
@@ -417,11 +441,11 @@ class ThreadsAutoReplier:
 
                             if (candidateTexts.length === 0) continue;
 
-                            // 按长度排序挑选最长一段作为真实粉丝评论正文（彻底杜绝将点赞数字或时间戳当成正文）
+                            // 按长度排序挑选最长一段作为真实粉丝评论正文
                             candidateTexts.sort((a, b) => b.length - a.length);
                             const bestText = candidateTexts[0];
 
-                            seenAuthors.add(author);
+                            seenAuthors.add(author.toLowerCase());
                             results.push({
                                 author,
                                 text: bestText,
