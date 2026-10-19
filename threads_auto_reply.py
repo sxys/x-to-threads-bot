@@ -126,8 +126,8 @@ class ThreadsAutoReplier:
         if len(clean_post) > 300:
             clean_post = clean_post[:300] + "..."
 
-        prompt = f"""你是 Threads 社交平台的博主。你发布了一条帖子，有一位粉丝在你的帖子下方发表了评论。
-请以博主本人的身份，针对该粉丝写一句自然、亲切、接地气的互动回复。
+        prompt = f"""你是 Threads 社交平台的中文博主。你发布了一条帖子，一位粉丝在你的帖子下方发表了评论。
+请以博主本人的身份，针对该粉丝写一句自然、机智、接地气的互动回复。
 
 【你发布的帖子内容】：
 \"\"\"{clean_post if clean_post else '（日常随笔与社会热点讨论）'}\"\"\"
@@ -136,10 +136,10 @@ class ThreadsAutoReplier:
 \"\"\"{comment_text.strip()}\"\"\"
 
 【严格回复原则】：
-1. 命中要害：必须针对粉丝评论的核心观点、情绪或疑问进行针对性回应，切中要害，严禁答非所问、自说自话。
-2. 短小精炼：字数严格控制在 10 ~ 30 个字（1 句话，最多 2 句短句）。社交平台切忌长篇大论。
-3. 真实社交口吻：语气随和、像真人朋友在评论区互动，可带适度风趣或情感共鸣（可自然使用 1 个常用 emoji 如 😂、🤝、👏 等，切勿滥用）。
-4. 杜绝 AI 假大空：严禁使用任何官方腔、客服腔、总结性陈词或假大空套话。
+1. 命中要害：必须针对粉丝评论的核心观点、吐槽或情绪进行针对性回应，切中要害，有观点、有态度，严禁答非所问。
+2. 绝对严禁口头禅废话：【严禁】开头使用“哈哈”、“确实”、“你说的对”、“笑死”等无意义口头禅！直接切入主题接梗、表达看法或机智互动。
+3. 短小精炼：字数在 12 ~ 30 个字之间（完整的一句话）。切忌长篇大论。
+4. 真实社交口吻：语气随和接地气，像真人在社交平台冲浪，可自然带 1 个常用 emoji（如 😂、🤝、👀、👏 等）。
 5. 纯净输出：仅输出单条回复文本，不要带任何前缀（如“回复：”）、双引号或额外解释。"""
 
         candidate_models = [model]
@@ -155,8 +155,8 @@ class ThreadsAutoReplier:
                 }
             ],
             "generationConfig": {
-                "temperature": 0.7,
-                "maxOutputTokens": 200,
+                "temperature": 0.8,
+                "maxOutputTokens": 300,
                 "topP": 0.9,
                 "thinkingConfig": {"thinkingBudget": 0}
             }
@@ -179,11 +179,13 @@ class ThreadsAutoReplier:
                                 # 文本后处理：清理多余引号、前缀与换行
                                 cleaned = raw_reply.strip(' "“\'”`')
                                 cleaned = re.sub(r'^(?:博主回复|回复|回覆)[:：]\s*', '', cleaned)
+                                # 彻底剥除开头不自然的“哈哈，”、“哈哈 ”等机械口头禅
+                                cleaned = re.sub(r'^(?:哈哈+[，,、\s]*)+', '', cleaned)
                                 cleaned = cleaned.replace('\n', ' ').strip()
-                                if cleaned and len(cleaned) <= 45:
+                                if cleaned and len(cleaned) <= 50:
                                     return cleaned
                                 elif cleaned:
-                                    return cleaned[:35] + "..."
+                                    return cleaned[:40] + "..."
                     elif resp.status_code == 404:
                         # 当前模型不存在，自动换下一个候选模型重试
                         continue
@@ -333,26 +335,48 @@ class ThreadsAutoReplier:
                     await page.goto(post_url, timeout=35000, wait_until="domcontentloaded")
                     await page.wait_for_timeout(4000)
 
-                    # 提取该帖的主帖正文与所有真实粉丝评论
+                    # 提取该帖的主帖正文与所有真实粉丝评论（深度清洗，精准定位真实文本）
                     post_data = await page.evaluate("""({myUser, postUrl}) => {
                         const mPost = postUrl.match(/\\/post\\/([A-Za-z0-9_-]+)/);
                         const myPostId = mPost ? mPost[1] : '';
 
-                        // 1. 提取主帖正文（作为 Gemini 思考与回复的背景上下文）
+                        const isNoise = (str) => {
+                            if (!str) return true;
+                            const s = str.trim();
+                            if (s.length < 2) return true;
+                            if (/^\\d+$/.test(s)) return true; // 纯数字（点赞数、评论数）
+                            if (/^(?:·\\s*)?\\d+\\s*[hdmwy秒分时天周](?:\\s*ago)?$/i.test(s)) return true; // 时间戳 (如 10m, 1h, · 2d)
+                            const lower = s.toLowerCase();
+                            const noiseWords = [
+                                'view activity', '查看动态', 'no replies yet', 'translate', '翻译', 
+                                'reply', '回复', '回覆', 'follow', '关注', 'liked by', 'likes', '赞', 
+                                'share', '分享', 'repost', '转帖', 'reposts', 'comments', 'views'
+                            ];
+                            if (noiseWords.some(w => lower === w || lower.includes(w))) return true;
+                            return false;
+                        };
+
+                        // 1. 提取主帖正文（优先从 meta 标签提取，其次从主帖容器筛选最长有效段落）
                         let postText = '';
-                        const containers = Array.from(document.querySelectorAll('div[data-pressable-container="true"]'));
-                        for (const c of containers) {
-                            const aSelf = c.querySelector(`a[href*="${myPostId}"]`);
-                            if (aSelf || containers.indexOf(c) === 0) {
-                                const spans = Array.from(c.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
-                                for (const s of spans) {
-                                    const t = (s.innerText || '').trim();
-                                    if (t && t.length > 3 && t !== myUser && !t.includes('views') && !t.includes('Translate') && !t.match(/^\\d+[hdm]$/)) {
-                                        postText = t;
-                                        break;
-                                    }
+                        const metaDesc = document.querySelector('meta[property="og:description"]') || document.querySelector('meta[name="description"]');
+                        if (metaDesc && metaDesc.content) {
+                            let raw = metaDesc.content.trim();
+                            const m = raw.match(/:\\s*["“](.*)["”]$/s);
+                            postText = m ? m[1].trim() : raw;
+                        }
+
+                        if (!postText || postText.length < 6 || isNoise(postText)) {
+                            const allSpans = Array.from(document.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
+                            let candidatePostTexts = [];
+                            for (const s of allSpans.slice(0, 45)) {
+                                const t = (s.innerText || '').trim();
+                                if (t.length >= 6 && !isNoise(t) && t.toLowerCase() !== myUser.toLowerCase()) {
+                                    candidatePostTexts.push(t);
                                 }
-                                if (postText) break;
+                            }
+                            if (candidatePostTexts.length > 0) {
+                                candidatePostTexts.sort((a, b) => b.length - a.length);
+                                postText = candidatePostTexts[0];
                             }
                         }
 
@@ -369,30 +393,35 @@ class ThreadsAutoReplier:
                             const author = m ? m[1] : 'unknown';
                             if (author === myUser || author === 'unknown') continue;
                             if (seenAuthors.has(author)) continue;
-                            seenAuthors.add(author);
 
-                            // 找到该评论卡片
+                            // 向上查找评论卡片容器
                             let card = a.closest('div[data-pressable-container="true"]') || a.parentElement;
                             while (card && card.tagName !== 'BODY') {
                                 if (card.querySelectorAll('svg').length >= 3) break;
                                 card = card.parentElement;
                             }
 
-                            let text = '';
+                            let candidateTexts = [];
                             if (card) {
                                 const spans = Array.from(card.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
                                 for (const s of spans) {
                                     const t = (s.innerText || '').trim();
-                                    if (t && t !== author && !t.includes('views') && !t.includes('Translate') && !t.match(/^\\d+[hdm]$/)) {
-                                        text = t;
-                                        break;
+                                    if (t && t !== author && t !== `@${author}` && !isNoise(t)) {
+                                        candidateTexts.push(t);
                                     }
                                 }
                             }
 
+                            if (candidateTexts.length === 0) continue;
+
+                            // 按长度排序挑选最长一段作为真实粉丝评论正文（彻底杜绝将点赞数字或时间戳当成正文）
+                            candidateTexts.sort((a, b) => b.length - a.length);
+                            const bestText = candidateTexts[0];
+
+                            seenAuthors.add(author);
                             results.push({
                                 author,
-                                text,
+                                text: bestText,
                                 href
                             });
                         }
