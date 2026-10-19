@@ -84,14 +84,16 @@ x-to-threads-bot/
 | **测试发布队列下一条** | `python threads_poster.py --post-now` | 立即提取队列中的下一个待发任务（含图文/视频）发布至 Threads 并自动清理缓存 |
 | **手动平摊重排队列** | `python threads_poster.py --reschedule` | 将当前所有剩余待发任务按每隔 30 分钟均匀重新排布并启动监听 |
 
-### 3. 主页评论自动巡查与粉丝互动（threads_auto_reply.py）
+### 3. 主页评论自动巡查与 Gemini 智能互动（threads_auto_reply.py）
 | 操作 | 命令 | 说明 |
 | :--- | :--- | :--- |
-| **立即单次巡查并回复** | `python threads_auto_reply.py --run-now` | 立即巡查主页最新 12 条帖子（覆盖过去 6 小时内容），为评论数 $\le 10$ 的帖子随机拟人回复 1~2 位真实粉丝 |
-| **仅模拟巡查（不真实发送）** | `python threads_auto_reply.py --dry-run` | 仅抓取和分析主页帖子评论区，并在控制台展示选中的粉丝和回复话术 |
+| **立即单次巡查并回复** | `python threads_auto_reply.py --run-now` | 立即巡查主页最新 12 条帖子（覆盖过去 6 小时内容），优先调用 Gemini AI 针对原帖和粉丝评论生成命中要害的回复（10~30字），若 API 受限则自动降级为预设话术 |
+| **仅模拟巡查（不真实发送）** | `python threads_auto_reply.py --dry-run` | 仅抓取和分析主页帖子评论区，并在控制台展示选中的粉丝和 AI / 预设回复话术 |
 | **自定义评论上限阈值** | `python threads_auto_reply.py --threshold 15` | 当评论数 $\le 15$ 时才触发回复（默认 10） |
 | **自定义巡查帖子深度** | `python threads_auto_reply.py --limit 16` | 自定义单次扫描的主页帖子篇数（默认 12 篇） |
 | **常驻守护后台巡查** | `python threads_auto_reply.py --daemon --interval-hours 2` | 后台常驻，每 2 小时自动巡查一次（默认 2 小时） |
+
+> 🛡️ **防风控与拟人保护**：回复之间内置 35~75 秒拟人随机长间隔，配合真实键盘输入与停顿，且单帖仅互动 1~2 人，彻底杜绝高频触发平台风控。
 
 ### 4. Telegram 机器人互动指令（无需登录服务器）
 直接在 Telegram 聊天窗口中向机器人发送：

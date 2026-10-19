@@ -5,6 +5,7 @@ import random
 import logging
 import asyncio
 import argparse
+import httpx
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 from playwright.async_api import async_playwright, Page
@@ -104,6 +105,79 @@ class ThreadsAutoReplier:
         post_id = p_id.group(1) if p_id else post_url
         clean_text = re.sub(r'\s+', '', comment_snippet)[:30]
         return f"{post_id}_{comment_author}_{clean_text}"
+
+    async def generate_gemini_reply(self, post_text: str, comment_text: str, comment_author: str) -> Optional[str]:
+        """
+        优先调用 Google Gemini API，根据原帖背景与粉丝评论生成切中要害、自然口语化的回复。
+        若未配置 Key、遇到频次限制 (HTTP 429)、网络超时或报错，返回 None 以触发自动优雅降级。
+        """
+        api_key = getattr(config, "GEMINI_API_KEY", "")
+        if not api_key or api_key.startswith("your_") or len(api_key.strip()) < 8:
+            return None
+
+        model = getattr(config, "GEMINI_MODEL", "gemini-1.5-flash") or "gemini-1.5-flash"
+        proxy = config.PROXY if config.PROXY and config.PROXY.strip() else None
+
+        clean_post = (post_text or "").strip()
+        if len(clean_post) > 300:
+            clean_post = clean_post[:300] + "..."
+
+        prompt = f"""你是 Threads 社交平台的博主。你发布了一条帖子，有一位粉丝在你的帖子下方发表了评论。
+请以博主本人的身份，针对该粉丝写一句自然、亲切、接地气的互动回复。
+
+【你发布的帖子内容】：
+\"\"\"{clean_post if clean_post else '（日常随笔与社会热点讨论）'}\"\"\"
+
+【粉丝 @{comment_author} 的评论内容】：
+\"\"\"{comment_text.strip()}\"\"\"
+
+【严格回复原则】：
+1. 命中要害：必须针对粉丝评论的核心观点、情绪或疑问进行针对性回应，切中要害，严禁答非所问、自说自话。
+2. 短小精炼：字数严格控制在 10 ~ 30 个字（1 句话，最多 2 句短句）。社交平台切忌长篇大论。
+3. 真实社交口吻：语气随和、像真人朋友在评论区互动，可带适度风趣或情感共鸣（可自然使用 1 个常用 emoji 如 😂、🤝、👏 等，切勿滥用）。
+4. 杜绝 AI 假大空：严禁使用任何官方腔、客服腔、总结性陈词或假大空套话。
+5. 纯净输出：仅输出单条回复文本，不要带任何前缀（如“回复：”）、双引号或额外解释。"""
+
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key.strip()}"
+        payload = {
+            "contents": [
+                {
+                    "parts": [{"text": prompt}]
+                }
+            ],
+            "generationConfig": {
+                "temperature": 0.7,
+                "maxOutputTokens": 60,
+                "topP": 0.9
+            }
+        }
+
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=12.0) as client:
+                resp = await client.post(url, json=payload)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    candidates = data.get("candidates", [])
+                    if candidates:
+                        parts = candidates[0].get("content", {}).get("parts", [])
+                        if parts:
+                            raw_reply = parts[0].get("text", "").strip()
+                            # 文本后处理：清理多余引号、前缀与换行
+                            cleaned = raw_reply.strip(' "“\'”`')
+                            cleaned = re.sub(r'^(?:博主回复|回复|回覆)[:：]\s*', '', cleaned)
+                            cleaned = cleaned.replace('\n', ' ').strip()
+                            if cleaned and len(cleaned) <= 45:
+                                return cleaned
+                            elif cleaned:
+                                return cleaned[:35] + "..."
+                elif resp.status_code == 429:
+                    logger.warning("⚠️ Gemini API 触发配额频次限制 (HTTP 429)，将平滑降级为预设话术。")
+                else:
+                    logger.warning(f"⚠️ Gemini API 返回异常 (HTTP {resp.status_code}): {resp.text[:120]}")
+        except Exception as e:
+            logger.warning(f"⚠️ 调用 Gemini API 失败 ({e})，将平滑降级为预设话术。")
+
+        return None
 
     async def patrol_and_reply(self, dry_run: bool = False) -> Dict[str, Any]:
         """
@@ -240,10 +314,30 @@ class ThreadsAutoReplier:
                     await page.goto(post_url, timeout=35000, wait_until="domcontentloaded")
                     await page.wait_for_timeout(4000)
 
-                    # 提取该帖下的所有真实粉丝评论
-                    comments = await page.evaluate("""({myUser, postUrl}) => {
+                    # 提取该帖的主帖正文与所有真实粉丝评论
+                    post_data = await page.evaluate("""({myUser, postUrl}) => {
                         const mPost = postUrl.match(/\\/post\\/([A-Za-z0-9_-]+)/);
                         const myPostId = mPost ? mPost[1] : '';
+
+                        // 1. 提取主帖正文（作为 Gemini 思考与回复的背景上下文）
+                        let postText = '';
+                        const containers = Array.from(document.querySelectorAll('div[data-pressable-container="true"]'));
+                        for (const c of containers) {
+                            const aSelf = c.querySelector(`a[href*="${myPostId}"]`);
+                            if (aSelf || containers.indexOf(c) === 0) {
+                                const spans = Array.from(c.querySelectorAll('span[dir="auto"], div[dir="auto"]'));
+                                for (const s of spans) {
+                                    const t = (s.innerText || '').trim();
+                                    if (t && t.length > 3 && t !== myUser && !t.includes('views') && !t.includes('Translate') && !t.match(/^\\d+[hdm]$/)) {
+                                        postText = t;
+                                        break;
+                                    }
+                                }
+                                if (postText) break;
+                            }
+                        }
+
+                        // 2. 提取粉丝评论
                         const allPostLinks = Array.from(document.querySelectorAll('a[href*="/post/"]'));
                         const results = [];
                         const seenAuthors = new Set();
@@ -283,11 +377,13 @@ class ThreadsAutoReplier:
                                 href
                             });
                         }
-                        return results;
+                        return { postText, comments: results };
                     }""", {"myUser": my_username, "postUrl": post_url})
 
+                    post_text = post_data.get("postText", "")
+                    comments = post_data.get("comments", [])
                     total_comments_count = len(comments)
-                    logger.info(f"该帖子检测到粉丝评论数: {total_comments_count} 条")
+                    logger.info(f"该帖子检测到粉丝评论数: {total_comments_count} 条 (主帖文案: '{post_text[:30]}...')")
 
                     # 条件过滤：只在评论很少（1 ~ max_comments_threshold 条之间，默认 <= 10）时才进行回复
                     if total_comments_count == 0:
@@ -334,11 +430,19 @@ class ThreadsAutoReplier:
                             await page.goto(post_url, timeout=35000, wait_until="domcontentloaded")
                             await page.wait_for_timeout(3000)
 
-                        chosen_phrase = random.choice(self.phrases)
-                        logger.info(f"👉 准备回复 @{target['author']} ('{target['text'][:20]}...'): \"{chosen_phrase}\"")
+                        # 优先调用 Gemini API 生成命中要害的智能回复，失败时优雅降级为预设话术
+                        ai_reply = await self.generate_gemini_reply(post_text, target["text"], target["author"])
+                        if ai_reply:
+                            chosen_phrase = ai_reply
+                            reply_source = "Gemini AI"
+                        else:
+                            chosen_phrase = random.choice(self.phrases)
+                            reply_source = "预设精选"
+
+                        logger.info(f"👉 准备回复 @{target['author']} ('{target['text'][:20]}...'): \"{chosen_phrase}\" [{reply_source}]")
 
                         if dry_run:
-                            logger.info(f"[DRY-RUN 演示模式] 拟回复成功 (@{target['author']} -> '{chosen_phrase}')，已跳过真实点击。")
+                            logger.info(f"[DRY-RUN 演示模式] 拟回复成功 (@{target['author']} -> '{chosen_phrase}' [{reply_source}])，已跳过真实点击。")
                             summary["replies_posted"] += 1
                             continue
 
@@ -372,9 +476,10 @@ class ThreadsAutoReplier:
                             continue
 
                         await editor.click()
-                        await page.wait_for_timeout(500)
+                        await page.wait_for_timeout(random.randint(600, 1200))
                         await page.keyboard.insert_text(chosen_phrase)
-                        await page.wait_for_timeout(1500)
+                        # 拟人打字后确认停顿
+                        await page.wait_for_timeout(random.randint(1800, 3000))
 
                         # 查找发送按钮：在输入框同一区域的带有 Reply 标识的圆圈图标或按键
                         send_btn = page.locator('svg[aria-label="Reply"], svg[aria-label="回复"], svg[aria-label="回覆"]').last
@@ -391,6 +496,7 @@ class ThreadsAutoReplier:
                             "comment_author": target["author"],
                             "comment_text": target["text"],
                             "my_reply": chosen_phrase,
+                            "source": reply_source,
                             "replied_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                         }
                         self.save_replied_history(replied_history)
@@ -399,12 +505,15 @@ class ThreadsAutoReplier:
                         summary["details"].append({
                             "author": target["author"],
                             "reply": chosen_phrase,
+                            "source": reply_source,
                             "post_url": post_url
                         })
                         logger.info(f"✅ 成功回复 @{target['author']}！已记入去重库。")
 
-                        # 防风控休眠 12~25 秒
-                        jitter_wait = random.randint(12, 25)
+                        # 防风控休眠：设定 35~75 秒拟人间隙，避免过于密集触发平台封控
+                        delay_min = getattr(config, "AUTO_REPLY_DELAY_MIN", 35)
+                        delay_max = getattr(config, "AUTO_REPLY_DELAY_MAX", 75)
+                        jitter_wait = random.randint(min(delay_min, delay_max), max(delay_min, delay_max))
                         logger.info(f"⏳ [防风控拟人间隔] 等待 {jitter_wait} 秒后再进行下一项操作...")
                         await page.wait_for_timeout(jitter_wait * 1000)
 
