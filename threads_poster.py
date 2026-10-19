@@ -86,25 +86,73 @@ class ThreadsPublisher:
             try:
                 logger.info("正在导航至 https://www.threads.com/ ...")
                 await page.goto("https://www.threads.com/", timeout=45000, wait_until="domcontentloaded")
-                await page.wait_for_timeout(3000)
+                await page.wait_for_timeout(3500)
 
-                # 1. 打开发帖弹窗
-                dialog = page.locator('div[role="dialog"]').first
+                # 0. 登录态存活检测：检查 Cookie 是否失效或被踢出登录
+                is_logged_out = await page.evaluate("""() => {
+                    const text = document.body.innerText || '';
+                    if (text.includes('Say more with Threads') || text.includes('Continue with Instagram') || text.includes('Log in with Instagram')) {
+                        return true;
+                    }
+                    const hasLoginBtn = Array.from(document.querySelectorAll('a, button, div[role="button"]')).some(el => {
+                        const t = (el.innerText || '').trim();
+                        return t === 'Log in' || t === '登录' || t === '登入';
+                    });
+                    const hasUserAvatarOrProfile = !!document.querySelector('a[href*="/@"]');
+                    return hasLoginBtn && !hasUserAvatarOrProfile;
+                }""")
+
+                if is_logged_out:
+                    await page.screenshot(path="debug_cookie_expired.png")
+                    err_msg = "❌ Threads Cookie 已失效/过期（页面弹出 Continue with Instagram / Log in 登录拦截窗）！请重新从浏览器导出最新的 threads_cookies.json 替换并重启服务。"
+                    logger.error(err_msg)
+                    try:
+                        from tg_sender import TelegramSender
+                        TelegramSender().send_message(
+                            "⚠️ <b>Threads 发帖服务异常告警</b>\n\n"
+                            "检测到 <b>Threads 登录态已失效 (Cookie 过期)</b>，导致推文无法发布！\n\n"
+                            "<b>恢复方法：</b>\n"
+                            "1. 在浏览器登录 Threads 并导出最新 <code>threads_cookies.json</code>\n"
+                            "2. 替换 VPS 上的 <code>/var/www/x-to-threads-bot/threads_cookies.json</code>\n"
+                            "3. 运行 <code>sudo systemctl restart threads-poster</code> 即可自动恢复发帖！"
+                        )
+                    except Exception as tg_err:
+                        logger.warning(f"发送 TG 告警失败: {tg_err}")
+                    raise Exception(err_msg)
+
+                # 1. 打开发帖弹窗（严格过滤只匹配包含输入框的发帖弹窗，彻底杜绝误选其他通知或拦截弹窗）
+                dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     logger.info("正在打开 Threads 发帖界面...")
-                    new_btn = page.locator('div[role="button"]:has-text("New thread")').first
+                    # 优先策略 1: 侧边栏/导航栏的 New thread / Create / + 按钮
+                    new_btn = page.locator('div[role="button"]:has-text("New thread"), div[role="button"]:has-text("Create")').first
                     if await new_btn.count() == 0:
                         new_btn = page.get_by_role("button", name="New thread")
                     if await new_btn.count() == 0:
-                        new_btn = page.locator('svg[aria-label="New thread"]').first
+                        new_btn = page.get_by_role("button", name="Create")
+                    if await new_btn.count() == 0:
+                        new_btn = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').first
 
-                    await new_btn.click()
-                    await page.wait_for_timeout(2000)
-                    dialog = page.locator('div[role="dialog"]').first
+                    if await new_btn.count() > 0:
+                        await new_btn.click()
+                        await page.wait_for_timeout(2000)
 
+                    # 备选策略 2: 主页信息流顶部的 "Start a thread..." / "发帖..." 占位输入区
+                    dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
+                    if await dialog.count() == 0:
+                        inline_composer = page.locator('div:has-text("Start a thread..."), span:has-text("Start a thread..."), div:has-text("有什么新鲜事？")').first
+                        if await inline_composer.count() > 0:
+                            await inline_composer.click()
+                            await page.wait_for_timeout(2000)
+                            dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
+
+                # 兜底：如果页面存在已展开的 contenteditable，直接使用
                 if await dialog.count() == 0:
-                    await page.screenshot(path="debug_open_editor_failed.png")
-                    raise Exception("未能成功打开发帖弹窗，已截图 debug_open_editor_failed.png")
+                    if await page.locator('div[contenteditable="true"]').count() > 0:
+                        dialog = page
+                    else:
+                        await page.screenshot(path="debug_open_editor_failed.png")
+                        raise Exception("未能成功打开发帖弹窗，已截图 debug_open_editor_failed.png")
 
                 # 2. 定位编辑器并写入推文内容
                 logger.info("正在输入推文文案...")
