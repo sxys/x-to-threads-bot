@@ -54,7 +54,7 @@ class Config:
 
     # ================== Gemini AI 智能回复与防风控配置 ==================
     GEMINI_API_KEY: str = os.getenv("GEMINI_API_KEY", "")
-    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
+    GEMINI_MODEL: str = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
     # 自动回复防风控拟人间歇时间（秒，默认 35 ~ 75 秒）
     AUTO_REPLY_DELAY_MIN: int = int(os.getenv("AUTO_REPLY_DELAY_MIN", "35"))
     AUTO_REPLY_DELAY_MAX: int = int(os.getenv("AUTO_REPLY_DELAY_MAX", "75"))

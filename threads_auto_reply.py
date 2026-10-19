@@ -115,7 +115,11 @@ class ThreadsAutoReplier:
         if not api_key or api_key.startswith("your_") or len(api_key.strip()) < 8:
             return None
 
-        model = getattr(config, "GEMINI_MODEL", "gemini-1.5-flash") or "gemini-1.5-flash"
+        # 优先使用 gemini-2.5-flash；若配置为已停用的旧 1.5 系列，自动无缝升级为 2.5
+        model = getattr(config, "GEMINI_MODEL", "gemini-2.5-flash") or "gemini-2.5-flash"
+        if "1.5" in model:
+            model = "gemini-2.5-flash"
+
         proxy = config.PROXY if config.PROXY and config.PROXY.strip() else None
 
         clean_post = (post_text or "").strip()
@@ -138,7 +142,12 @@ class ThreadsAutoReplier:
 4. 杜绝 AI 假大空：严禁使用任何官方腔、客服腔、总结性陈词或假大空套话。
 5. 纯净输出：仅输出单条回复文本，不要带任何前缀（如“回复：”）、双引号或额外解释。"""
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent?key={api_key.strip()}"
+        candidate_models = [model]
+        if model != "gemini-2.5-flash":
+            candidate_models.append("gemini-2.5-flash")
+        if "gemini-2.5-flash-lite" not in candidate_models:
+            candidate_models.append("gemini-2.5-flash-lite")
+
         payload = {
             "contents": [
                 {
@@ -147,33 +156,43 @@ class ThreadsAutoReplier:
             ],
             "generationConfig": {
                 "temperature": 0.7,
-                "maxOutputTokens": 60,
-                "topP": 0.9
+                "maxOutputTokens": 200,
+                "topP": 0.9,
+                "thinkingConfig": {"thinkingBudget": 0}
             }
         }
 
         try:
             async with httpx.AsyncClient(proxy=proxy, timeout=12.0) as client:
-                resp = await client.post(url, json=payload)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    candidates = data.get("candidates", [])
-                    if candidates:
-                        parts = candidates[0].get("content", {}).get("parts", [])
-                        if parts:
-                            raw_reply = parts[0].get("text", "").strip()
-                            # 文本后处理：清理多余引号、前缀与换行
-                            cleaned = raw_reply.strip(' "“\'”`')
-                            cleaned = re.sub(r'^(?:博主回复|回复|回覆)[:：]\s*', '', cleaned)
-                            cleaned = cleaned.replace('\n', ' ').strip()
-                            if cleaned and len(cleaned) <= 45:
-                                return cleaned
-                            elif cleaned:
-                                return cleaned[:35] + "..."
-                elif resp.status_code == 429:
-                    logger.warning("⚠️ Gemini API 触发配额频次限制 (HTTP 429)，将平滑降级为预设话术。")
-                else:
-                    logger.warning(f"⚠️ Gemini API 返回异常 (HTTP {resp.status_code}): {resp.text[:120]}")
+                for cur_model in candidate_models:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={api_key.strip()}"
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates = data.get("candidates", [])
+                        if candidates:
+                            parts = candidates[0].get("content", {}).get("parts", [])
+                            # 提取正文文本（排除 thought 节点）
+                            text_parts = [p.get("text", "") for p in parts if "text" in p and not p.get("thought", False)]
+                            if text_parts:
+                                raw_reply = text_parts[0].strip()
+                                # 文本后处理：清理多余引号、前缀与换行
+                                cleaned = raw_reply.strip(' "“\'”`')
+                                cleaned = re.sub(r'^(?:博主回复|回复|回覆)[:：]\s*', '', cleaned)
+                                cleaned = cleaned.replace('\n', ' ').strip()
+                                if cleaned and len(cleaned) <= 45:
+                                    return cleaned
+                                elif cleaned:
+                                    return cleaned[:35] + "..."
+                    elif resp.status_code == 404:
+                        # 当前模型不存在，自动换下一个候选模型重试
+                        continue
+                    elif resp.status_code == 429:
+                        logger.warning("⚠️ Gemini API 触发配额频次限制 (HTTP 429)，将平滑降级为预设话术。")
+                        break
+                    else:
+                        logger.warning(f"⚠️ Gemini API 返回异常 (HTTP {resp.status_code}): {resp.text[:120]}")
+                        break
         except Exception as e:
             logger.warning(f"⚠️ 调用 Gemini API 失败 ({e})，将平滑降级为预设话术。")
 
