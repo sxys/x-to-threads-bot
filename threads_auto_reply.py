@@ -491,9 +491,18 @@ class ThreadsAutoReplier:
 
                     # 动态回复策略：评论少于或等于 10 条回复 1 个；评论大于 10 条回复 2 个
                     target_quota = 1 if total_comments_count <= self.max_comments_threshold else 2
-                    target_count = min(target_quota, len(candidates))
+
+                    # 严格限制单帖累计回复总数：统计历史库中已经对该帖子累计回复过的数量（杜绝多轮巡查重复回复同一帖子）
+                    already_replied_count = sum(1 for item in replied_history.values() if item.get("post_url") == post_url)
+                    remaining_quota = max(0, target_quota - already_replied_count)
+
+                    if remaining_quota <= 0:
+                        logger.info(f"ℹ️ 该帖子历史已累计回复 {already_replied_count} 条，已达本帖总配额上限 ({target_quota} 条)，跳过。")
+                        continue
+
+                    target_count = min(remaining_quota, len(candidates))
                     selected_candidates = random.sample(candidates, target_count)
-                    logger.info(f"🎯 帖子总评论 {total_comments_count} 条 (动态配额: {target_quota} 人)，选定回复其中 {len(selected_candidates)} 条粉丝评论：")
+                    logger.info(f"🎯 帖子总评论 {total_comments_count} 条 (总配额: {target_quota} 人, 历史已回: {already_replied_count} 人, 本次计划回复: {len(selected_candidates)} 人)：")
 
                     for t_idx, target in enumerate(selected_candidates):
                         # 如果同一个帖子回复多位粉丝，回复完第一位后页面停留在其子线程，必须重新导航回帖子主页
