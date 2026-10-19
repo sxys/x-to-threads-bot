@@ -142,11 +142,14 @@ class ThreadsAutoReplier:
 4. 真实社交口吻：语气随和接地气，像真人在社交平台冲浪，可自然带 1 个常用 emoji（如 😂、🤝、👀、👏 等）。
 5. 纯净输出：仅输出单条回复文本，不要带任何前缀（如“回复：”）、双引号或额外解释。"""
 
-        candidate_models = [model]
-        if model != "gemini-2.5-flash":
-            candidate_models.append("gemini-2.5-flash")
-        if "gemini-2.5-flash-lite" not in candidate_models:
-            candidate_models.append("gemini-2.5-flash-lite")
+        candidate_models = []
+        # 将 gemini-2.5-flash-lite 作为首选高频互动模型，免费配额充足（每天数千次），绝不会触发 20 次/天的限制
+        candidate_models.append("gemini-2.5-flash-lite")
+        if model and model not in candidate_models:
+            candidate_models.append(model)
+        for m in ["gemini-2.5-flash", "gemini-flash-latest"]:
+            if m not in candidate_models:
+                candidate_models.append(m)
 
         payload = {
             "contents": [
@@ -190,11 +193,11 @@ class ThreadsAutoReplier:
                         # 当前模型不存在，自动换下一个候选模型重试
                         continue
                     elif resp.status_code == 429:
-                        logger.warning("⚠️ Gemini API 触发配额频次限制 (HTTP 429)，将平滑降级为预设话术。")
-                        break
+                        logger.warning(f"⚠️ 模型 {cur_model} 触发配额限制 (HTTP 429)，自动尝试下一个可用模型...")
+                        continue
                     else:
                         logger.warning(f"⚠️ Gemini API 返回异常 (HTTP {resp.status_code}): {resp.text[:120]}")
-                        break
+                        continue
         except Exception as e:
             logger.warning(f"⚠️ 调用 Gemini API 失败 ({e})，将平滑降级为预设话术。")
 
@@ -492,6 +495,7 @@ class ThreadsAutoReplier:
                         if dry_run:
                             logger.info(f"[DRY-RUN 演示模式] 拟回复成功 (@{target['author']} -> '{chosen_phrase}' [{reply_source}])，已跳过真实点击。")
                             summary["replies_posted"] += 1
+                            await asyncio.sleep(2)  # 演练模式下适度缓冲2秒，防止瞬间并发请求触发 RPM (每分钟频次) 限制
                             continue
 
                         # 精确定位该评论卡片内部的 Reply 按钮
