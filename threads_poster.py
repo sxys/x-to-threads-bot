@@ -572,7 +572,8 @@ async def run_worker(min_interval_minutes: int = 20):
 def main():
     parser = argparse.ArgumentParser(description="Threads 自动定时均匀发布机器人")
     parser.add_argument("--status", action="store_true", help="查看当前待发队列详情与进度")
-    parser.add_argument("--post-now", action="store_true", help="立即发布队列中的第一个待发任务进行实测")
+    parser.add_argument("--post-now", action="store_true", help="立即发布队列中的下一个待发任务进行实测")
+    parser.add_argument("--post-task", type=int, help="立即测试发布指定序号的任务（例如 --post-task 55 重试任务 #55）")
     parser.add_argument("--clean-media", action="store_true", help="全面清理所有已发任务与历史孤立的多媒体文件，释放 VPS 磁盘空间")
     parser.add_argument("--test", type=str, help="直接发布自定义测试文案到 Threads（无需依赖队列）")
     parser.add_argument("--add-tweet", type=str, help="手动传入一个 X 推文链接或 ID，以最高优先级插队排期")
@@ -658,16 +659,38 @@ def main():
         print_queue_status()
         logger.info("已完成重排，正在进入全天 24 小时自动发布常驻服务...")
 
+    if args.post_task is not None:
+        target_no = args.post_task
+        queue = QueueManager.load_queue()
+        matching = [i for i in queue if i.get("index") == target_no]
+        if not matching:
+            print(f"❌ 队列中未找到序号为 #{target_no} 的任务。请运行 --status 检查队列。")
+            return
+        target = matching[0]
+        print(f"🚀 正在单独测试发布任务 #{target['index']} (当前状态: {target.get('status')})...")
+        print(f"文案: {target['text'][:60]}... | 附件: {len(target.get('media_files', []))} 个")
+        pub = ThreadsPublisher(headless=True)
+        res = asyncio.run(pub.post_thread(target["text"], target.get("media_files", [])))
+        if res:
+            QueueManager.update_task_status(target["id"], "published")
+            freed = QueueManager.delete_task_media(target["id"], target.get("media_files", []))
+            print(f"✅ 任务 #{target['index']} 立即发布成功！已在 Threads 上线并清理本地媒体缓存 (释放 {freed/1024/1024:.2f} MB)！")
+        else:
+            print(f"❌ 任务 #{target['index']} 发布失败，请查看日志。")
+        return
+
     if args.post_now:
         queue = QueueManager.load_queue()
-        pending = [i for i in queue if i["status"] == "pending"]
-        if not pending:
-            print("当前队列中没有待发布的任务。")
+        targets = [i for i in queue if i.get("status") == "pending"]
+        if not targets:
+            targets = [i for i in queue if i.get("status") == "failed"]
+        if not targets:
+            print("当前队列中没有待发布或失败的任务。")
             return
-        target = pending[0]
-        print(f"立即测试发布任务 #{target['index']}: {target['text'][:40]}...")
+        target = targets[0]
+        print(f"立即测试发布任务 #{target['index']} (状态: {target.get('status')}): {target['text'][:40]}...")
         pub = ThreadsPublisher(headless=True)
-        res = asyncio.run(pub.post_thread(target["text"], target["media_files"]))
+        res = asyncio.run(pub.post_thread(target["text"], target.get("media_files", [])))
         if res:
             QueueManager.update_task_status(target["id"], "published")
             freed = QueueManager.delete_task_media(target["id"], target.get("media_files", []))
