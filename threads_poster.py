@@ -192,9 +192,18 @@ class ThreadsPublisher:
 
                 # 1. 打开发帖弹窗（严格过滤只匹配包含输入框的发帖弹窗，彻底杜绝误选其他通知或拦截弹窗）
                 dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
+                
+                async def _wait_for_dialog(timeout_secs=6):
+                    for _ in range(int(timeout_secs * 2)):
+                        await page.wait_for_timeout(500)
+                        if await dialog.count() > 0 and await dialog.is_visible():
+                            return True
+                    return False
+
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     logger.info("正在打开 Threads 发帖界面...")
-                    # 优先策略 1: 侧边栏/导航栏的 New thread / Create / + 按钮
+                    
+                    # 策略 1: 侧边栏/导航栏的 New thread / Create / + 按钮
                     new_btn = page.locator('div[role="button"]:has-text("New thread"), div[role="button"]:has-text("Create")').first
                     if await new_btn.count() == 0:
                         new_btn = page.get_by_role("button", name="New thread")
@@ -204,20 +213,40 @@ class ThreadsPublisher:
                         new_btn = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').first
 
                     if await new_btn.count() > 0:
-                        await new_btn.click()
-                        await page.wait_for_timeout(2000)
+                        try:
+                            await new_btn.click(force=True, timeout=3000)
+                        except Exception:
+                            await new_btn.evaluate("el => el.click()")
+                        await _wait_for_dialog(5)
 
-                    # 备选策略 2: 主页信息流顶部的 "Start a thread..." / "发帖..." 占位输入区
-                    dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
-                    if await dialog.count() == 0:
-                        inline_composer = page.locator('div:has-text("Start a thread..."), span:has-text("Start a thread..."), div:has-text("有什么新鲜事？")').first
-                        if await inline_composer.count() > 0:
-                            await inline_composer.click()
-                            await page.wait_for_timeout(2000)
-                            dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
+                    # 策略 2: 主页信息流顶部的 "What's new?" / "Start a thread..." / "发帖..." 占位输入区
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        feed_composer = page.locator('div:has-text("What\'s new?"), span:has-text("What\'s new?"), div:has-text("Start a thread..."), span:has-text("Start a thread..."), div:has-text("有什么新鲜事？")').first
+                        if await feed_composer.count() > 0:
+                            try:
+                                await feed_composer.click(force=True, timeout=3000)
+                            except Exception:
+                                await feed_composer.evaluate("el => el.click()")
+                            await _wait_for_dialog(5)
+
+                    # 策略 3: 右下角浮动发帖按钮（圆形/方形 + 号）
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        floating_btn = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').last
+                        if await floating_btn.count() > 0:
+                            try:
+                                await floating_btn.click(force=True, timeout=3000)
+                            except Exception:
+                                await floating_btn.evaluate("el => el.click()")
+                            await _wait_for_dialog(5)
+
+                    # 策略 4: 快捷键 'c' (Threads 官方快速发帖快捷键)
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        logger.info("尝试键盘快捷键 'c' 唤起发帖界面...")
+                        await page.keyboard.press("c")
+                        await _wait_for_dialog(4)
 
                 # 兜底：如果页面存在已展开的 contenteditable，直接使用
-                if await dialog.count() == 0:
+                if await dialog.count() == 0 or not await dialog.is_visible():
                     if await page.locator('div[contenteditable="true"]').count() > 0:
                         dialog = page
                     else:
