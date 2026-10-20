@@ -627,7 +627,14 @@ class ThreadsAutoReplier:
                             logger.warning("未找到回复输入框，跳过本条。")
                             continue
 
-                        await editor.click()
+                        try:
+                            await editor.focus()
+                        except Exception:
+                            pass
+                        try:
+                            await editor.click(force=True, timeout=3000)
+                        except Exception:
+                            await editor.evaluate("el => el.focus()")
                         await page.wait_for_timeout(random.randint(600, 1200))
                         await page.keyboard.insert_text(chosen_phrase)
                         # 拟人打字后确认停顿

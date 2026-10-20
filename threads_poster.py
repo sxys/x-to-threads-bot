@@ -256,7 +256,14 @@ class ThreadsPublisher:
                 # 2. 定位编辑器并写入推文内容
                 logger.info("正在输入推文文案...")
                 editor = dialog.locator('div[contenteditable="true"]').first
-                await editor.click()
+                try:
+                    await editor.focus()
+                except Exception:
+                    pass
+                try:
+                    await editor.click(force=True, timeout=3000)
+                except Exception:
+                    await editor.evaluate("el => el.focus()")
                 await page.wait_for_timeout(500)
                 await page.keyboard.insert_text(text)
                 await page.wait_for_timeout(1000)
