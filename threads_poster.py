@@ -193,30 +193,57 @@ class ThreadsPublisher:
                 # 1. 打开发帖界面（防重复触发机制）
                 dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
                 
-                # 如果页面尚未出现可见的发帖弹窗，才去唤起
+                # 如果页面尚未出现可见的发帖弹窗，多策略尝试唤起
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     logger.info("正在打开 Threads 发帖界面...")
                     
-                    # 优先策略 1: 侧边栏/导航栏的 New thread / Create 按钮
-                    new_btn = page.locator('div[role="button"]:has-text("New thread"), div[role="button"]:has-text("Create"), a:has-text("New thread")').first
-                    if await new_btn.count() == 0:
-                        new_btn = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').first
-
-                    if await new_btn.count() > 0:
+                    # 策略 1: 点击左侧边栏可见的 "+ New thread" 按钮
+                    sidebar_btn = page.locator('div[role="button"]:has-text("New thread"), a:has-text("New thread"), div:has-text("New thread")').filter(has_not=page.locator('[style*="display: none"]')).last
+                    if await sidebar_btn.count() > 0 and await sidebar_btn.is_visible():
                         try:
-                            await new_btn.click(force=True, timeout=3000)
+                            await sidebar_btn.click(timeout=2500)
                         except Exception:
-                            await new_btn.evaluate("el => el.click()")
-                        for _ in range(10):
+                            await sidebar_btn.click(force=True, timeout=2500)
+                        for _ in range(8):
                             await page.wait_for_timeout(500)
                             if await dialog.count() > 0 and await dialog.is_visible():
                                 break
 
-                    # 备选策略 2: 键盘快捷键 'c'
+                    # 策略 2: 点击右下角悬浮圆形 '+' 按钮 (FAB)
                     if await dialog.count() == 0 or not await dialog.is_visible():
-                        logger.info("尝试键盘快捷键 'c' 唤起发帖界面...")
+                        fab = page.locator('div[role="button"]:has(svg)').filter(has_not=page.locator('[style*="display: none"]')).last
+                        if await fab.count() > 0 and await fab.is_visible():
+                            try:
+                                await fab.click(timeout=2500)
+                            except Exception:
+                                await fab.click(force=True, timeout=2500)
+                            for _ in range(8):
+                                await page.wait_for_timeout(500)
+                                if await dialog.count() > 0 and await dialog.is_visible():
+                                    break
+
+                    # 策略 3: 点击主页顶部信息流的 "What's new?" / "有什么新鲜事？" 输入区域
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        feed_input = page.locator('div:has-text("What\'s new?"), span:has-text("What\'s new?"), div:has-text("有什么新鲜事？")').last
+                        if await feed_input.count() > 0 and await feed_input.is_visible():
+                            try:
+                                await feed_input.click(timeout=2500)
+                            except Exception:
+                                await feed_input.click(force=True, timeout=2500)
+                            for _ in range(8):
+                                await page.wait_for_timeout(500)
+                                if await dialog.count() > 0 and await dialog.is_visible():
+                                    break
+
+                    # 策略 4: 先聚焦页面主体，再按官方快捷键 'c'
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        logger.info("尝试聚焦页面并按快捷键 'c' 唤起发帖界面...")
+                        try:
+                            await page.locator('body').click(force=True, timeout=2000)
+                        except Exception:
+                            pass
                         await page.keyboard.press("c")
-                        for _ in range(10):
+                        for _ in range(8):
                             await page.wait_for_timeout(500)
                             if await dialog.count() > 0 and await dialog.is_visible():
                                 break
