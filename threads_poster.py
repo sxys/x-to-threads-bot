@@ -199,35 +199,74 @@ class ThreadsPublisher:
                 # 1. 打开发帖弹窗（严密锁定 role="dialog" 独立发帖容器）
                 dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
                 
-                # 如果尚未打开发帖弹窗，按优先级尝试唤起
+                # 如果尚未打开发帖弹窗，多策略智能唤起
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     logger.info("正在打开 Threads 发帖界面...")
                     
-                    # 策略 1: 聚焦页面主体并按下官方快捷键 'c'
-                    logger.info("尝试聚焦页面主体并按快捷键 'c' 唤起发帖弹窗...")
-                    try:
-                        await page.locator('body').click(force=True, timeout=2000)
-                    except Exception:
-                        pass
-                    await page.keyboard.press("c")
-                    for _ in range(8):
-                        await page.wait_for_timeout(500)
-                        if await dialog.count() > 0 and await dialog.is_visible():
-                            break
+                    # 策略 1: 点击左侧边栏专属 "+ New thread" / "Create" 导航按键
+                    create_svg = page.locator('svg[aria-label="Create"], svg[aria-label="New thread"], svg:has(title:has-text("Create"))').first
+                    if await create_svg.count() > 0:
+                        logger.info("尝试点击左侧边栏 Create / New thread 按钮...")
+                        create_btn = create_svg.locator('xpath=ancestor::div[@role="button" or @tabindex="0"][1]')
+                        try:
+                            if await create_btn.count() > 0:
+                                await create_btn.evaluate("el => el.click()")
+                            else:
+                                await create_svg.evaluate("el => el.parentElement.click()")
+                        except Exception as e:
+                            logger.warning(f"点击侧边栏按键异常: {e}")
+                        
+                        for _ in range(6):
+                            await page.wait_for_timeout(500)
+                            if await dialog.count() > 0 and await dialog.is_visible():
+                                break
 
-                    # 策略 2: 点击右下角固定的圆形 '+' 悬浮发帖按钮 (FAB)
+                    # 策略 2: 点击主页信息流顶部的 "What's new?" / "有什么新鲜事？" 输入区域 (必须位于顶部 y < 250)
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        feed_box = page.locator('div:has-text("What\'s new?"), span:has-text("What\'s new?"), div:has-text("有什么新鲜事？")').first
+                        if await feed_box.count() > 0 and await feed_box.is_visible():
+                            box = await feed_box.bounding_box()
+                            if box and box.get("y", 999) < 250:
+                                logger.info("尝试点击信息流顶部 What's new 占位框...")
+                                try:
+                                    await feed_box.evaluate("el => el.click()")
+                                except Exception:
+                                    pass
+                                for _ in range(6):
+                                    await page.wait_for_timeout(500)
+                                    if await dialog.count() > 0 and await dialog.is_visible():
+                                        break
+
+                    # 策略 3: 点击右下角固定的圆形 '+' 悬浮发帖按钮 (通过坐标定位绝对不会点错)
                     if await dialog.count() == 0 or not await dialog.is_visible():
                         logger.info("尝试点击右下角悬浮发帖按钮...")
-                        fab = page.locator('div[role="button"]:has(svg)').filter(has_not=page.locator('[style*="display: none"]')).last
-                        if await fab.count() > 0 and await fab.is_visible():
-                            try:
-                                await fab.click(timeout=2500)
-                            except Exception:
-                                await fab.click(force=True, timeout=2500)
-                            for _ in range(8):
-                                await page.wait_for_timeout(500)
-                                if await dialog.count() > 0 and await dialog.is_visible():
-                                    break
+                        await page.evaluate("""() => {
+                            const all = document.querySelectorAll('div[role="button"]');
+                            for (const b of all) {
+                                const rect = b.getBoundingClientRect();
+                                if (rect.x > window.innerWidth * 0.7 && rect.y > window.innerHeight * 0.5 && rect.width < 100 && rect.height < 100) {
+                                    b.click();
+                                    return;
+                                }
+                            }
+                        }""")
+                        for _ in range(6):
+                            await page.wait_for_timeout(500)
+                            if await dialog.count() > 0 and await dialog.is_visible():
+                                break
+
+                    # 策略 4: 聚焦页面主体并按下官方快捷键 'c'
+                    if await dialog.count() == 0 or not await dialog.is_visible():
+                        logger.info("尝试聚焦页面主体并按快捷键 'c' 唤起发帖弹窗...")
+                        try:
+                            await page.locator('body').click(force=True, timeout=2000)
+                        except Exception:
+                            pass
+                        await page.keyboard.press("c")
+                        for _ in range(6):
+                            await page.wait_for_timeout(500)
+                            if await dialog.count() > 0 and await dialog.is_visible():
+                                break
 
                 # 严格校验：发帖必须在独立的发帖弹窗 (role="dialog") 内完成，杜绝误选其他用户的评论框！
                 if await dialog.count() == 0 or not await dialog.is_visible():
