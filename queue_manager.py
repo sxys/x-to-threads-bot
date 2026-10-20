@@ -502,23 +502,37 @@ class QueueManager:
         other_pending = [i for i in queue if i.get("status") == "pending"]
 
         if other_pending:
-            # 存在已有待发任务时，直接占用原本排在最先的时间槽（下一个就发它）
+            # 存在已有待发任务时，检查原本排在最先的时间槽
             existing_slots = [item["scheduled_time"] for item in other_pending]
             priority_time_str = existing_slots[0]
+            try:
+                first_dt = datetime.strptime(priority_time_str, "%Y-%m-%d %H:%M:%S")
+            except Exception:
+                first_dt = now
 
-            # 后续原有的待发任务依次顺延占用下一个已有时间槽，保持节奏丝毫不乱
-            for rank in range(len(other_pending)):
-                if rank + 1 < len(existing_slots):
-                    other_pending[rank]["scheduled_time"] = existing_slots[rank + 1]
-                else:
-                    # 最后一个任务顺延 30 分钟（保持每半小时一条的节奏）
-                    try:
-                        last_dt = datetime.strptime(existing_slots[-1], "%Y-%m-%d %H:%M:%S")
-                    except Exception:
-                        last_dt = now + timedelta(minutes=30 * len(other_pending))
+            # 关键修复：如果原本的时间槽已经落入过去（例如因中途暂停或维护导致时间已过），
+            # 则将插队任务设为当前时刻稍后（2 分钟后），并依次向后顺延排布后续所有任务，杜绝历史过去时间！
+            if first_dt <= now:
+                first_dt = now + timedelta(minutes=2)
+                priority_time_str = first_dt.strftime("%Y-%m-%d %H:%M:%S")
+
+                for rank, p_item in enumerate(other_pending):
                     jitter = random.randint(-2, 2)
-                    new_last_time = last_dt + timedelta(minutes=30 + jitter)
-                    other_pending[rank]["scheduled_time"] = new_last_time.strftime("%Y-%m-%d %H:%M:%S")
+                    next_time = first_dt + timedelta(minutes=int((rank + 1) * 30) + jitter)
+                    p_item["scheduled_time"] = next_time.strftime("%Y-%m-%d %H:%M:%S")
+            else:
+                # 原定时间槽尚在未来，正常顺延已有时间槽
+                for rank in range(len(other_pending)):
+                    if rank + 1 < len(existing_slots):
+                        other_pending[rank]["scheduled_time"] = existing_slots[rank + 1]
+                    else:
+                        try:
+                            last_dt = datetime.strptime(existing_slots[-1], "%Y-%m-%d %H:%M:%S")
+                        except Exception:
+                            last_dt = now + timedelta(minutes=30 * len(other_pending))
+                        jitter = random.randint(-2, 2)
+                        new_last_time = last_dt + timedelta(minutes=30 + jitter)
+                        other_pending[rank]["scheduled_time"] = new_last_time.strftime("%Y-%m-%d %H:%M:%S")
         else:
             # 队列当前为空时，按上次发帖时间顺延 30 分钟（或至少 2 分钟后）
             last_pub = cls.get_last_published_time()
