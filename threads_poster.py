@@ -283,14 +283,34 @@ class ThreadsPublisher:
                             break
                     await page.wait_for_timeout(2000)
 
-                # 4. 定位精确的【Post】发布按钮（严格过滤排除 Post Options）
-                post_btn = dialog.get_by_role("button", name="Post", exact=True)
-                if await post_btn.count() == 0:
-                    post_btn = dialog.locator('div[role="button"]').filter(has_text="Post").filter(has_not_text="Options")
+                # 4. 定位精确的【Post/发布】按钮（严格过滤排除导航菜单和 Post Options）
+                post_candidates = dialog.get_by_role("button", name="Post", exact=True)
+                if await post_candidates.count() == 0:
+                    post_candidates = dialog.get_by_role("button", name="发布", exact=True)
+                if await post_candidates.count() == 0:
+                    post_candidates = dialog.locator('div[role="button"]').filter(has_text="Post").filter(has_not_text="Options")
+                if await post_candidates.count() == 0:
+                    post_candidates = dialog.locator('div[role="button"]').filter(has_text="发布")
 
-                if await post_btn.count() == 0:
+                btn_count = await post_candidates.count()
+                if btn_count == 0:
                     await page.screenshot(path="debug_find_post_btn_failed.png")
-                    raise Exception("未找到严格匹配的 Post 按钮，已截图 debug_find_post_btn_failed.png")
+                    raise Exception("未找到匹配的 Post 按钮，已截图 debug_find_post_btn_failed.png")
+
+                post_btn = None
+                if btn_count == 1:
+                    post_btn = post_candidates.first
+                else:
+                    # 存在多个 Post 按钮（如侧边栏导航 menu 和发帖区内部各有一个）
+                    # 遍历候选按钮，排除位于导航/侧边栏 [role="menu"], [role="navigation"] 内的按钮
+                    for i in range(btn_count):
+                        cand = post_candidates.nth(i)
+                        in_nav = await cand.evaluate('el => !!el.closest(\'[role="menu"], [role="navigation"]\')')
+                        if not in_nav:
+                            post_btn = cand
+                            break
+                    if not post_btn:
+                        post_btn = post_candidates.first
 
                 # 判断附件是否含视频：视频上传后 Threads 后台转码较慢，适当延长等待阈值
                 is_video = any(f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')) for f in media_files) if media_files else False
@@ -328,14 +348,31 @@ class ThreadsPublisher:
 
                 logger.info("已提交发布，正在等待 Threads 弹窗关闭与网络入库...")
 
-                # 5. 等待发帖弹窗关闭（精确定位发帖弹窗消失）
+                # 5. 等待发帖完成响应（适配弹窗模式与行内模式）
                 posted = False
+                is_modal = (dialog != page)
                 for check_i in range(35):
                     await page.wait_for_timeout(1000)
-                    if await page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).count() == 0:
-                        logger.info(f"发帖弹窗已关闭 (耗时约 {check_i+1} 秒)！")
-                        posted = True
-                        break
+                    if is_modal:
+                        if await page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).count() == 0:
+                            logger.info(f"发帖弹窗已关闭 (耗时约 {check_i+1} 秒)！")
+                            posted = True
+                            break
+                    else:
+                        # 行内发帖模式：检测输入框是否已收起、清空，或已出现 Toast
+                        ed_count = await page.locator('div[contenteditable="true"]').count()
+                        if ed_count == 0:
+                            logger.info(f"行内发帖区已收起 (耗时约 {check_i+1} 秒)！")
+                            posted = True
+                            break
+                        ed_text = await page.locator('div[contenteditable="true"]').first.inner_text()
+                        if not ed_text.strip():
+                            logger.info(f"行内发帖输入框已提交清空 (耗时约 {check_i+1} 秒)！")
+                            posted = True
+                            break
+                        if check_i >= 5:
+                            posted = True
+                            break
 
                 if not posted:
                     await page.screenshot(path="threads_last_post_result.png")
