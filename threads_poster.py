@@ -39,8 +39,14 @@ class ThreadsPublisher:
         """读取并转换 Cookies 为 Playwright 标准格式"""
         if not os.path.exists(COOKIE_FILE):
             raise FileNotFoundError(f"未找到 {COOKIE_FILE}，请先确保 Cookie 文件存在！")
-        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+        if os.path.getsize(COOKIE_FILE) == 0:
+            raise ValueError(f"❌ {COOKIE_FILE} 文件内容为空 (0 字节)！请使用 nano 重新粘贴完整的 Cookie JSON 内容。")
+
+        try:
+            with open(COOKIE_FILE, "r", encoding="utf-8") as f:
+                raw = json.load(f)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"❌ {COOKIE_FILE} 不是合法的 JSON 格式 ({e})！请检查是否完整复制了包含首尾中括号 [ ... ] 的内容。")
 
         formatted = []
         for c in raw:
