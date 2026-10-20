@@ -256,10 +256,13 @@ class ThreadsPublisher:
                     await page.screenshot(path="debug_find_post_btn_failed.png")
                     raise Exception("未找到严格匹配的 Post 按钮，已截图 debug_find_post_btn_failed.png")
 
-                # 等待按钮处于就绪状态（媒体上传与转码完成时，aria-disabled 为空且 opacity 接近 1）
-                logger.info("等待 Post 按钮就绪（媒体上传与转码完成）...")
+                # 判断附件是否含视频：视频上传后 Threads 后台转码较慢，适当延长等待阈值
+                is_video = any(f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')) for f in media_files) if media_files else False
+                post_ready_timeout = 150 if is_video else 45
+                logger.info(f"等待 Post 按钮就绪（媒体上传与转码完成，类型: {'视频(最长150s)' if is_video else '图片/纯文本(最长45s)'}）...")
+
                 clicked_ok = False
-                for attempt in range(45):
+                for attempt in range(post_ready_timeout):
                     await page.wait_for_timeout(1000)
                     status = await post_btn.evaluate("""el => {
                         const s = window.getComputedStyle(el);
@@ -272,21 +275,28 @@ class ThreadsPublisher:
                     }""")
                     if status.get("ariaDisabled") != "true" and not status.get("disabled") and status.get("opacity") >= 0.8:
                         logger.info(f"Post 按钮已进入就绪状态 (耗时约 {attempt+1} 秒)，执行真实点击...")
-                        await post_btn.click()
+                        try:
+                            # 1. 尝试 force=True 强制点击，杜绝页面文案/话题联想等浮层拦截 (intercepts pointer events)
+                            await post_btn.click(force=True, timeout=5000)
+                        except Exception as click_err:
+                            logger.warning(f"force click 出现轻微抖动 ({click_err})，采用原生 DOM Click 穿透点击...")
+                            # 2. 兜底直接派发原生 DOM 点击事件，100% 杜绝遮挡问题
+                            await post_btn.evaluate("el => el.click()")
+
                         clicked_ok = True
                         break
 
                 if not clicked_ok:
                     await page.screenshot(path="debug_click_failed.png")
-                    raise Exception("Post 按钮在 45 秒内未变为可发布状态（可能媒体转码超时），已截图 debug_click_failed.png")
+                    raise Exception(f"Post 按钮在 {post_ready_timeout} 秒内未变为可发布状态（可能视频转码超时），已截图 debug_click_failed.png")
 
                 logger.info("已提交发布，正在等待 Threads 弹窗关闭与网络入库...")
 
-                # 5. 等待发帖弹窗关闭
+                # 5. 等待发帖弹窗关闭（精确定位发帖弹窗消失）
                 posted = False
-                for check_i in range(25):
+                for check_i in range(35):
                     await page.wait_for_timeout(1000)
-                    if await page.locator('div[role="dialog"]').count() == 0:
+                    if await page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).count() == 0:
                         logger.info(f"发帖弹窗已关闭 (耗时约 {check_i+1} 秒)！")
                         posted = True
                         break
