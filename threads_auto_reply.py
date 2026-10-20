@@ -57,26 +57,94 @@ class ThreadsAutoReplier:
         self.proxy_settings = {"server": config.PROXY} if config.PROXY and config.PROXY.strip() else None
 
     def _load_cookies(self):
-        """读取并转换 Cookies 为 Playwright 格式"""
+        """读取并转换 Cookies 为 Playwright 标准格式，智能兼容 JSON、Netscape 及 Key=Value 格式"""
         if not os.path.exists(COOKIE_FILE):
-            raise FileNotFoundError(f"未找到 {COOKIE_FILE}，请先配置 Threads 登录 Cookie！")
-        with open(COOKIE_FILE, "r", encoding="utf-8") as f:
-            raw = json.load(f)
+            raise FileNotFoundError(f"未找到 {COOKIE_FILE}，请先确保 Cookie 文件存在！")
+        if os.path.getsize(COOKIE_FILE) == 0:
+            raise ValueError(f"❌ {COOKIE_FILE} 文件内容为空 (0 字节)！")
+
+        with open(COOKIE_FILE, "r", encoding="utf-8-sig") as f:
+            content = f.read().strip()
 
         formatted = []
-        for c in raw:
-            item = {
-                "name": c["name"],
-                "value": c["value"],
-                "domain": c.get("domain", ".threads.net"),
-                "path": c.get("path", "/"),
-                "secure": True
-            }
-            formatted.append(item)
-            if "threads.net" in item["domain"]:
+
+        # 格式 1: 标准 JSON 格式 ([ { "name": ..., "value": ... } ])
+        if content.startswith("[") or content.startswith("{"):
+            try:
+                raw = json.loads(content)
+                if isinstance(raw, dict):
+                    raw = [raw]
+                for c in raw:
+                    item = {
+                        "name": c["name"],
+                        "value": c["value"],
+                        "domain": c.get("domain", ".threads.net"),
+                        "path": c.get("path", "/"),
+                        "secure": True
+                    }
+                    formatted.append(item)
+                    if "threads.net" in item["domain"]:
+                        c2 = item.copy()
+                        c2["domain"] = ".threads.com"
+                        formatted.append(c2)
+                    elif "threads.com" in item["domain"]:
+                        c2 = item.copy()
+                        c2["domain"] = ".threads.net"
+                        formatted.append(c2)
+                return formatted
+            except json.JSONDecodeError:
+                pass
+
+        # 格式 2: Netscape HTTP Cookie 格式 (# Netscape HTTP Cookie File 或 制表符分隔文本)
+        for line in content.splitlines():
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            parts = line.split("\t")
+            if len(parts) >= 7:
+                domain, flag, path, secure, expiration, name, value = parts[:7]
+                item = {
+                    "name": name.strip(),
+                    "value": value.strip(),
+                    "domain": domain.strip(),
+                    "path": path.strip(),
+                    "secure": secure.strip().upper() == "TRUE"
+                }
+                formatted.append(item)
+                if "threads.net" in item["domain"]:
+                    c2 = item.copy()
+                    c2["domain"] = ".threads.com"
+                    formatted.append(c2)
+                elif "threads.com" in item["domain"]:
+                    c2 = item.copy()
+                    c2["domain"] = ".threads.net"
+                    formatted.append(c2)
+
+        if formatted:
+            return formatted
+
+        # 格式 3: Header String (name=value; name2=value2;)
+        if "=" in content:
+            for pair in content.replace("\n", ";").split(";"):
+                pair = pair.strip()
+                if not pair or "=" not in pair:
+                    continue
+                k, v = pair.split("=", 1)
+                item = {
+                    "name": k.strip(),
+                    "value": v.strip(),
+                    "domain": ".threads.net",
+                    "path": "/",
+                    "secure": True
+                }
+                formatted.append(item)
                 c2 = item.copy()
                 c2["domain"] = ".threads.com"
                 formatted.append(c2)
+
+        if not formatted:
+            raise ValueError(f"❌ 无法解析 {COOKIE_FILE} 中的 Cookie 内容，请确保是标准的 JSON 或 Netscape 格式！")
+
         return formatted
 
     @staticmethod
