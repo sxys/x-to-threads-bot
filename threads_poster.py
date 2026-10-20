@@ -190,27 +190,34 @@ class ThreadsPublisher:
                         logger.warning(f"发送 TG 告警失败: {tg_err}")
                     raise Exception(err_msg)
 
-                # 1. 打开发帖界面（防重复触发机制）
+                # 确保当前处于 Threads 首页，严防点入其他用户的推文评论页
+                if "/post/" in page.url:
+                    logger.info("检测到当前处于推文详情页，正在返回 Threads 首页...")
+                    await page.goto("https://www.threads.com/", timeout=30000, wait_until="domcontentloaded")
+                    await page.wait_for_timeout(2000)
+
+                # 1. 打开发帖弹窗（严密锁定 role="dialog" 独立发帖容器）
                 dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
                 
-                # 如果页面尚未出现可见的发帖弹窗，多策略尝试唤起
+                # 如果尚未打开发帖弹窗，按优先级尝试唤起
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     logger.info("正在打开 Threads 发帖界面...")
                     
-                    # 策略 1: 点击左侧边栏可见的 "+ New thread" 按钮
-                    sidebar_btn = page.locator('div[role="button"]:has-text("New thread"), a:has-text("New thread"), div:has-text("New thread")').filter(has_not=page.locator('[style*="display: none"]')).last
-                    if await sidebar_btn.count() > 0 and await sidebar_btn.is_visible():
-                        try:
-                            await sidebar_btn.click(timeout=2500)
-                        except Exception:
-                            await sidebar_btn.click(force=True, timeout=2500)
-                        for _ in range(8):
-                            await page.wait_for_timeout(500)
-                            if await dialog.count() > 0 and await dialog.is_visible():
-                                break
+                    # 策略 1: 聚焦页面主体并按下官方快捷键 'c'
+                    logger.info("尝试聚焦页面主体并按快捷键 'c' 唤起发帖弹窗...")
+                    try:
+                        await page.locator('body').click(force=True, timeout=2000)
+                    except Exception:
+                        pass
+                    await page.keyboard.press("c")
+                    for _ in range(8):
+                        await page.wait_for_timeout(500)
+                        if await dialog.count() > 0 and await dialog.is_visible():
+                            break
 
-                    # 策略 2: 点击右下角悬浮圆形 '+' 按钮 (FAB)
+                    # 策略 2: 点击右下角固定的圆形 '+' 悬浮发帖按钮 (FAB)
                     if await dialog.count() == 0 or not await dialog.is_visible():
+                        logger.info("尝试点击右下角悬浮发帖按钮...")
                         fab = page.locator('div[role="button"]:has(svg)').filter(has_not=page.locator('[style*="display: none"]')).last
                         if await fab.count() > 0 and await fab.is_visible():
                             try:
@@ -222,41 +229,12 @@ class ThreadsPublisher:
                                 if await dialog.count() > 0 and await dialog.is_visible():
                                     break
 
-                    # 策略 3: 点击主页顶部信息流的 "What's new?" / "有什么新鲜事？" 输入区域
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        feed_input = page.locator('div:has-text("What\'s new?"), span:has-text("What\'s new?"), div:has-text("有什么新鲜事？")').last
-                        if await feed_input.count() > 0 and await feed_input.is_visible():
-                            try:
-                                await feed_input.click(timeout=2500)
-                            except Exception:
-                                await feed_input.click(force=True, timeout=2500)
-                            for _ in range(8):
-                                await page.wait_for_timeout(500)
-                                if await dialog.count() > 0 and await dialog.is_visible():
-                                    break
-
-                    # 策略 4: 先聚焦页面主体，再按官方快捷键 'c'
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        logger.info("尝试聚焦页面并按快捷键 'c' 唤起发帖界面...")
-                        try:
-                            await page.locator('body').click(force=True, timeout=2000)
-                        except Exception:
-                            pass
-                        await page.keyboard.press("c")
-                        for _ in range(8):
-                            await page.wait_for_timeout(500)
-                            if await dialog.count() > 0 and await dialog.is_visible():
-                                break
-
-                # 兜底：如果依然没有 role="dialog"，但页面上有已展开的 contenteditable
+                # 严格校验：发帖必须在独立的发帖弹窗 (role="dialog") 内完成，杜绝误选其他用户的评论框！
                 if await dialog.count() == 0 or not await dialog.is_visible():
-                    if await page.locator('div[contenteditable="true"]').count() > 0:
-                        dialog = page
-                    else:
-                        await page.screenshot(path="debug_open_editor_failed.png")
-                        raise Exception("未能成功打开发帖弹窗，已截图 debug_open_editor_failed.png")
+                    await page.screenshot(path="debug_open_editor_failed.png")
+                    raise Exception("未能成功打开发帖弹窗，已截图 debug_open_editor_failed.png")
 
-                # 检查是否存在多弹窗堆叠（清理多余的空白弹窗遮挡）
+                # 检查是否存在多弹窗堆叠（自动清理空白遮挡层）
                 all_dialogs = await page.locator('div[role="dialog"]').all()
                 if len(all_dialogs) > 1:
                     logger.info(f"检测到 {len(all_dialogs)} 个弹窗，正在检查并关闭空白遮挡层...")
@@ -269,9 +247,9 @@ class ThreadsPublisher:
                                 await cancel_btn.click(force=True)
                                 await page.wait_for_timeout(500)
 
-                # 2. 定位编辑器并写入推文内容
+                # 2. 定位弹窗内的编辑器并写入推文内容
                 logger.info("正在输入推文文案...")
-                editor = dialog.locator('div[contenteditable="true"]').last
+                editor = dialog.locator('div[contenteditable="true"]').first
                 try:
                     await editor.focus()
                 except Exception:
@@ -284,39 +262,33 @@ class ThreadsPublisher:
                 await page.keyboard.insert_text(text)
                 await page.wait_for_timeout(1000)
 
-                # 3. 上传多媒体附件（图片或视频）
-                # 严格定位当前包含 editor 的弹窗容器
-                composer_modal = editor.locator('xpath=ancestor::div[@role="dialog"][1]')
-                target_container = composer_modal if await composer_modal.count() > 0 else dialog
-
+                # 3. 上传多媒体附件（严格限制在当前发帖弹窗内）
                 if media_files:
                     logger.info(f"正在上传媒体附件 ({len(media_files)} 个文件)...")
-                    file_input = target_container.locator('input[type="file"]').first
-                    if await file_input.count() == 0:
-                        file_input = page.locator('input[type="file"]').last
+                    file_input = dialog.locator('input[type="file"]').first
                     await file_input.set_input_files(media_files)
 
                     logger.info("文件已提交，正在等待 Threads 前端渲染与转码...")
                     for wait_i in range(25):
                         await page.wait_for_timeout(1000)
-                        has_preview = await target_container.locator('img, video').count() > 0
+                        has_preview = await dialog.locator('img, video').count() > 0
                         if has_preview:
                             logger.info(f"媒体预览已成功渲染 (耗时约 {wait_i+1} 秒)")
                             break
                     await page.wait_for_timeout(2000)
 
-                # 4. 定位精确的【Post/发布】按钮（锁定当前编辑弹窗内部的专属提交按键）
-                post_candidates = target_container.get_by_role("button", name="Post", exact=True)
+                # 4. 定位精确的【Post/发布】按钮（锁定当前发帖弹窗内的专属提交按键）
+                post_candidates = dialog.get_by_role("button", name="Post", exact=True)
                 if await post_candidates.count() == 0:
-                    post_candidates = target_container.get_by_role("button", name="发布", exact=True)
+                    post_candidates = dialog.get_by_role("button", name="发布", exact=True)
                 if await post_candidates.count() == 0:
-                    post_candidates = target_container.locator('div[role="button"]').filter(has_text="Post").filter(has_not_text="Options")
+                    post_candidates = dialog.locator('div[role="button"]').filter(has_text="Post").filter(has_not_text="Options")
                 if await post_candidates.count() == 0:
-                    post_candidates = target_container.locator('div[role="button"]').filter(has_text="发布")
+                    post_candidates = dialog.locator('div[role="button"]').filter(has_text="发布")
 
                 if await post_candidates.count() == 0:
                     await page.screenshot(path="debug_find_post_btn_failed.png")
-                    raise Exception("未找到匹配的 Post 按钮，已截图 debug_find_post_btn_failed.png")
+                    raise Exception("未找到当前发帖弹窗内的 Post 按钮，已截图 debug_find_post_btn_failed.png")
 
                 post_btn = post_candidates.last
 
@@ -361,13 +333,13 @@ class ThreadsPublisher:
                 for check_i in range(35):
                     await page.wait_for_timeout(1000)
                     # 检查当前发帖弹窗是否真正关闭
-                    if await composer_modal.count() == 0 or not await composer_modal.is_visible():
+                    if await dialog.count() == 0 or not await dialog.is_visible():
                         logger.info(f"发帖弹窗已成功关闭 (耗时约 {check_i+1} 秒)！")
                         posted = True
                         break
 
                     # 检查是否有错误提示
-                    err_box = target_container.locator('div:has-text("Couldn\'t post"), div:has-text("无法发布")').first
+                    err_box = dialog.locator('div:has-text("Couldn\'t post"), div:has-text("无法发布")').first
                     if await err_box.count() > 0:
                         raise Exception(f"Threads 界面提示错误: {await err_box.inner_text()}")
 
