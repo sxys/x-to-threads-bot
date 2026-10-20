@@ -190,25 +190,15 @@ class ThreadsPublisher:
                         logger.warning(f"发送 TG 告警失败: {tg_err}")
                     raise Exception(err_msg)
 
-                # 1. 打开发帖弹窗（严格过滤只匹配包含输入框的发帖弹窗，彻底杜绝误选其他通知或拦截弹窗）
+                # 1. 打开发帖界面（防重复触发机制）
                 dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
                 
-                async def _wait_for_dialog(timeout_secs=6):
-                    for _ in range(int(timeout_secs * 2)):
-                        await page.wait_for_timeout(500)
-                        if await dialog.count() > 0 and await dialog.is_visible():
-                            return True
-                    return False
-
+                # 如果页面尚未出现可见的发帖弹窗，才去唤起
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     logger.info("正在打开 Threads 发帖界面...")
                     
-                    # 策略 1: 侧边栏/导航栏的 New thread / Create / + 按钮
-                    new_btn = page.locator('div[role="button"]:has-text("New thread"), div[role="button"]:has-text("Create")').first
-                    if await new_btn.count() == 0:
-                        new_btn = page.get_by_role("button", name="New thread")
-                    if await new_btn.count() == 0:
-                        new_btn = page.get_by_role("button", name="Create")
+                    # 优先策略 1: 侧边栏/导航栏的 New thread / Create 按钮
+                    new_btn = page.locator('div[role="button"]:has-text("New thread"), div[role="button"]:has-text("Create"), a:has-text("New thread")').first
                     if await new_btn.count() == 0:
                         new_btn = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').first
 
@@ -217,35 +207,21 @@ class ThreadsPublisher:
                             await new_btn.click(force=True, timeout=3000)
                         except Exception:
                             await new_btn.evaluate("el => el.click()")
-                        await _wait_for_dialog(5)
+                        for _ in range(10):
+                            await page.wait_for_timeout(500)
+                            if await dialog.count() > 0 and await dialog.is_visible():
+                                break
 
-                    # 策略 2: 主页信息流顶部的 "What's new?" / "Start a thread..." / "发帖..." 占位输入区
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        feed_composer = page.locator('div:has-text("What\'s new?"), span:has-text("What\'s new?"), div:has-text("Start a thread..."), span:has-text("Start a thread..."), div:has-text("有什么新鲜事？")').first
-                        if await feed_composer.count() > 0:
-                            try:
-                                await feed_composer.click(force=True, timeout=3000)
-                            except Exception:
-                                await feed_composer.evaluate("el => el.click()")
-                            await _wait_for_dialog(5)
-
-                    # 策略 3: 右下角浮动发帖按钮（圆形/方形 + 号）
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        floating_btn = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').last
-                        if await floating_btn.count() > 0:
-                            try:
-                                await floating_btn.click(force=True, timeout=3000)
-                            except Exception:
-                                await floating_btn.evaluate("el => el.click()")
-                            await _wait_for_dialog(5)
-
-                    # 策略 4: 快捷键 'c' (Threads 官方快速发帖快捷键)
+                    # 备选策略 2: 键盘快捷键 'c'
                     if await dialog.count() == 0 or not await dialog.is_visible():
                         logger.info("尝试键盘快捷键 'c' 唤起发帖界面...")
                         await page.keyboard.press("c")
-                        await _wait_for_dialog(4)
+                        for _ in range(10):
+                            await page.wait_for_timeout(500)
+                            if await dialog.count() > 0 and await dialog.is_visible():
+                                break
 
-                # 兜底：如果页面存在已展开的 contenteditable，直接使用
+                # 兜底：如果依然没有 role="dialog"，但页面上有已展开的 contenteditable
                 if await dialog.count() == 0 or not await dialog.is_visible():
                     if await page.locator('div[contenteditable="true"]').count() > 0:
                         dialog = page
@@ -253,9 +229,22 @@ class ThreadsPublisher:
                         await page.screenshot(path="debug_open_editor_failed.png")
                         raise Exception("未能成功打开发帖弹窗，已截图 debug_open_editor_failed.png")
 
+                # 检查是否存在多弹窗堆叠（清理多余的空白弹窗遮挡）
+                all_dialogs = await page.locator('div[role="dialog"]').all()
+                if len(all_dialogs) > 1:
+                    logger.info(f"检测到 {len(all_dialogs)} 个弹窗，正在检查并关闭空白遮挡层...")
+                    for d in all_dialogs:
+                        d_text = "".join(await d.locator('div[contenteditable="true"]').all_inner_texts()) if await d.locator('div[contenteditable="true"]').count() > 0 else ""
+                        has_media = await d.locator('img, video').count() > 0
+                        if not d_text.strip() and not has_media:
+                            cancel_btn = d.locator('div[role="button"]:has-text("Cancel"), button:has-text("Cancel"), div[role="button"]:has-text("取消")').first
+                            if await cancel_btn.count() > 0:
+                                await cancel_btn.click(force=True)
+                                await page.wait_for_timeout(500)
+
                 # 2. 定位编辑器并写入推文内容
                 logger.info("正在输入推文文案...")
-                editor = dialog.locator('div[contenteditable="true"]').first
+                editor = dialog.locator('div[contenteditable="true"]').last
                 try:
                     await editor.focus()
                 except Exception:
@@ -269,48 +258,40 @@ class ThreadsPublisher:
                 await page.wait_for_timeout(1000)
 
                 # 3. 上传多媒体附件（图片或视频）
+                # 严格定位当前包含 editor 的弹窗容器
+                composer_modal = editor.locator('xpath=ancestor::div[@role="dialog"][1]')
+                target_container = composer_modal if await composer_modal.count() > 0 else dialog
+
                 if media_files:
                     logger.info(f"正在上传媒体附件 ({len(media_files)} 个文件)...")
-                    file_input = dialog.locator('input[type="file"]').first
+                    file_input = target_container.locator('input[type="file"]').first
+                    if await file_input.count() == 0:
+                        file_input = page.locator('input[type="file"]').last
                     await file_input.set_input_files(media_files)
 
                     logger.info("文件已提交，正在等待 Threads 前端渲染与转码...")
-                    for wait_i in range(20):
+                    for wait_i in range(25):
                         await page.wait_for_timeout(1000)
-                        has_preview = await dialog.locator('img, video').count() > 0
+                        has_preview = await target_container.locator('img, video').count() > 0
                         if has_preview:
                             logger.info(f"媒体预览已成功渲染 (耗时约 {wait_i+1} 秒)")
                             break
                     await page.wait_for_timeout(2000)
 
-                # 4. 定位精确的【Post/发布】按钮（严格过滤排除导航菜单和 Post Options）
-                post_candidates = dialog.get_by_role("button", name="Post", exact=True)
+                # 4. 定位精确的【Post/发布】按钮（锁定当前编辑弹窗内部的专属提交按键）
+                post_candidates = target_container.get_by_role("button", name="Post", exact=True)
                 if await post_candidates.count() == 0:
-                    post_candidates = dialog.get_by_role("button", name="发布", exact=True)
+                    post_candidates = target_container.get_by_role("button", name="发布", exact=True)
                 if await post_candidates.count() == 0:
-                    post_candidates = dialog.locator('div[role="button"]').filter(has_text="Post").filter(has_not_text="Options")
+                    post_candidates = target_container.locator('div[role="button"]').filter(has_text="Post").filter(has_not_text="Options")
                 if await post_candidates.count() == 0:
-                    post_candidates = dialog.locator('div[role="button"]').filter(has_text="发布")
+                    post_candidates = target_container.locator('div[role="button"]').filter(has_text="发布")
 
-                btn_count = await post_candidates.count()
-                if btn_count == 0:
+                if await post_candidates.count() == 0:
                     await page.screenshot(path="debug_find_post_btn_failed.png")
                     raise Exception("未找到匹配的 Post 按钮，已截图 debug_find_post_btn_failed.png")
 
-                post_btn = None
-                if btn_count == 1:
-                    post_btn = post_candidates.first
-                else:
-                    # 存在多个 Post 按钮（如侧边栏导航 menu 和发帖区内部各有一个）
-                    # 遍历候选按钮，排除位于导航/侧边栏 [role="menu"], [role="navigation"] 内的按钮
-                    for i in range(btn_count):
-                        cand = post_candidates.nth(i)
-                        in_nav = await cand.evaluate('el => !!el.closest(\'[role="menu"], [role="navigation"]\')')
-                        if not in_nav:
-                            post_btn = cand
-                            break
-                    if not post_btn:
-                        post_btn = post_candidates.first
+                post_btn = post_candidates.last
 
                 # 判断附件是否含视频：视频上传后 Threads 后台转码较慢，适当延长等待阈值
                 is_video = any(f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')) for f in media_files) if media_files else False
@@ -348,35 +329,24 @@ class ThreadsPublisher:
 
                 logger.info("已提交发布，正在等待 Threads 弹窗关闭与网络入库...")
 
-                # 5. 等待发帖完成响应（适配弹窗模式与行内模式）
+                # 5. 等待发帖完成响应（发帖弹窗必须真正从界面消失）
                 posted = False
-                is_modal = (dialog != page)
                 for check_i in range(35):
                     await page.wait_for_timeout(1000)
-                    if is_modal:
-                        if await page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).count() == 0:
-                            logger.info(f"发帖弹窗已关闭 (耗时约 {check_i+1} 秒)！")
-                            posted = True
-                            break
-                    else:
-                        # 行内发帖模式：检测输入框是否已收起、清空，或已出现 Toast
-                        ed_count = await page.locator('div[contenteditable="true"]').count()
-                        if ed_count == 0:
-                            logger.info(f"行内发帖区已收起 (耗时约 {check_i+1} 秒)！")
-                            posted = True
-                            break
-                        ed_text = await page.locator('div[contenteditable="true"]').first.inner_text()
-                        if not ed_text.strip():
-                            logger.info(f"行内发帖输入框已提交清空 (耗时约 {check_i+1} 秒)！")
-                            posted = True
-                            break
-                        if check_i >= 5:
-                            posted = True
-                            break
+                    # 检查当前发帖弹窗是否真正关闭
+                    if await composer_modal.count() == 0 or not await composer_modal.is_visible():
+                        logger.info(f"发帖弹窗已成功关闭 (耗时约 {check_i+1} 秒)！")
+                        posted = True
+                        break
+
+                    # 检查是否有错误提示
+                    err_box = target_container.locator('div:has-text("Couldn\'t post"), div:has-text("无法发布")').first
+                    if await err_box.count() > 0:
+                        raise Exception(f"Threads 界面提示错误: {await err_box.inner_text()}")
 
                 if not posted:
                     await page.screenshot(path="threads_last_post_result.png")
-                    raise Exception("发帖弹窗在点击 Post 后仍未消失，可能触发了 Meta 限制，请查看 threads_last_post_result.png")
+                    raise Exception("发帖弹窗在点击 Post 后仍未消失，可能仍在转码或触发限制，请查看 threads_last_post_result.png")
 
                 # 6. 等待后台媒体网络提交完成（严密监听中英文 Toast 状态与网络静默）
                 is_video = any(f.lower().endswith(('.mp4', '.mov', '.webm', '.mkv')) for f in media_files) if media_files else False
