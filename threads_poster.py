@@ -196,68 +196,118 @@ class ThreadsPublisher:
                     await page.goto("https://www.threads.com/", timeout=30000, wait_until="domcontentloaded")
                     await page.wait_for_timeout(2000)
 
-                # 1. 打开发帖弹窗（严密锁定 role="dialog" 独立发帖容器）
+                # 1. 打开发帖界面（全面适配新旧 UI：左下黑胶囊按钮、顶部 What's new、右下悬浮加号及快捷键）
                 dialog = page.locator('div[role="dialog"]').filter(has=page.locator('div[contenteditable="true"]')).first
-                
-                # 如果尚未打开发帖弹窗，多策略智能唤起
-                if await dialog.count() == 0 or not await dialog.is_visible():
+
+                async def _get_open_composer():
+                    # 优先检测独立的 role="dialog" 发帖弹窗
+                    if await dialog.count() > 0 and await dialog.is_visible():
+                        return dialog
+                    any_d = page.locator('div[role="dialog"]')
+                    for i in range(await any_d.count()):
+                        cur = any_d.nth(i)
+                        if await cur.is_visible() and await cur.locator('div[contenteditable="true"]').count() > 0:
+                            return cur
+                    # 其次检测顶部信息流展开的行内编辑框 (必须处于顶部 y < 400，排除下方评论框)
+                    top_eds = page.locator('div[contenteditable="true"]')
+                    for i in range(await top_eds.count()):
+                        ed_item = top_eds.nth(i)
+                        if await ed_item.is_visible():
+                            box = await ed_item.bounding_box()
+                            if box and box.get("y", 999) < 400:
+                                container = ed_item.locator('xpath=ancestor::div[@role="region" or @role="dialog"][1]')
+                                return container if await container.count() > 0 else page
+                    return None
+
+                active_composer = await _get_open_composer()
+
+                # 如果尚未打开发帖界面，多策略依次唤起
+                if not active_composer:
                     logger.info("正在打开 Threads 发帖界面...")
-                    
-                    # 策略 1: 点击左侧边栏专属 "+ New thread" / "Create" 导航按键
-                    create_svg = page.locator('svg[aria-label="Create"], svg[aria-label="New thread"], svg:has(title:has-text("Create"))').first
-                    if await create_svg.count() > 0:
-                        logger.info("尝试点击左侧边栏 Create / New thread 按钮...")
-                        create_btn = create_svg.locator('xpath=ancestor::div[@role="button" or @tabindex="0"][1]')
+
+                    # 策略 1: 点击左侧边栏底部的黑色 [+ New thread] 按钮 (Threads 新 UI 核心入口)
+                    logger.info("策略 1: 尝试点击左下角 [+ New thread] 按钮...")
+                    btn_new = page.locator('div[role="button"], button, a, div').filter(has_text="New thread").filter(has_not=page.locator('[style*="display: none"]')).last
+                    if await btn_new.count() > 0 and await btn_new.is_visible():
                         try:
-                            if await create_btn.count() > 0:
-                                await create_btn.evaluate("el => el.click()")
-                            else:
-                                await create_svg.evaluate("el => el.parentElement.click()")
-                        except Exception as e:
-                            logger.warning(f"点击侧边栏按键异常: {e}")
-                        
-                        for _ in range(6):
+                            await btn_new.click(timeout=2500)
+                        except Exception:
+                            await btn_new.click(force=True, timeout=2500)
+                        for _ in range(8):
                             await page.wait_for_timeout(500)
-                            if await dialog.count() > 0 and await dialog.is_visible():
+                            active_composer = await _get_open_composer()
+                            if active_composer:
                                 break
 
-                    # 策略 2: 点击主页信息流顶部的 "What's new?" / "有什么新鲜事？" 输入区域 (必须位于顶部 y < 250)
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        feed_box = page.locator('div:has-text("What\'s new?"), span:has-text("What\'s new?"), div:has-text("有什么新鲜事？")').first
-                        if await feed_box.count() > 0 and await feed_box.is_visible():
-                            box = await feed_box.bounding_box()
-                            if box and box.get("y", 999) < 250:
-                                logger.info("尝试点击信息流顶部 What's new 占位框...")
-                                try:
-                                    await feed_box.evaluate("el => el.click()")
-                                except Exception:
-                                    pass
-                                for _ in range(6):
-                                    await page.wait_for_timeout(500)
-                                    if await dialog.count() > 0 and await dialog.is_visible():
-                                        break
+                    # 策略 2: 点击信息流顶部的 "What's new?" 占位区域
+                    if not active_composer:
+                        logger.info("策略 2: 尝试点击信息流顶部的 What's new? 占位框...")
+                        wn_target = page.get_by_text("What's new?", exact=True).first
+                        if await wn_target.count() == 0:
+                            wn_target = page.locator('span:text-is("What\'s new?"), div:text-is("What\'s new?")').first
+                        if await wn_target.count() == 0:
+                            wn_target = page.locator('div[role="region"]').first.locator('text="What\'s new?"').first
+                        if await wn_target.count() > 0 and await wn_target.is_visible():
+                            try:
+                                await wn_target.click(timeout=2500)
+                            except Exception:
+                                await wn_target.click(force=True, timeout=2500)
+                            for _ in range(8):
+                                await page.wait_for_timeout(500)
+                                active_composer = await _get_open_composer()
+                                if active_composer:
+                                    break
 
-                    # 策略 3: 点击右下角固定的圆形 '+' 悬浮发帖按钮 (通过坐标定位绝对不会点错)
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        logger.info("尝试点击右下角悬浮发帖按钮...")
-                        await page.evaluate("""() => {
-                            const all = document.querySelectorAll('div[role="button"]');
-                            for (const b of all) {
-                                const rect = b.getBoundingClientRect();
-                                if (rect.x > window.innerWidth * 0.7 && rect.y > window.innerHeight * 0.5 && rect.width < 100 && rect.height < 100) {
-                                    b.click();
-                                    return;
+                    # 策略 3: 点击右下角固定的圆形 '+' 悬浮按钮 (FAB)
+                    if not active_composer:
+                        logger.info("策略 3: 尝试点击右下角悬浮发帖按钮 (FAB)...")
+                        # 3a. 通过 DOM 寻找右下角圆形按钮
+                        try:
+                            await page.evaluate("""() => {
+                                const all = document.querySelectorAll('button, div[role="button"], a, div[tabindex="0"]');
+                                for (const b of all) {
+                                    const rect = b.getBoundingClientRect();
+                                    if (rect.x > window.innerWidth * 0.7 && rect.y > window.innerHeight * 0.5 && rect.width < 120 && rect.height < 120 && rect.width > 25) {
+                                        b.click();
+                                        return;
+                                    }
                                 }
-                            }
-                        }""")
-                        for _ in range(6):
+                            }""")
+                        except Exception:
+                            pass
+                        for _ in range(5):
                             await page.wait_for_timeout(500)
-                            if await dialog.count() > 0 and await dialog.is_visible():
+                            active_composer = await _get_open_composer()
+                            if active_composer:
                                 break
 
-                    # 策略 4: 聚焦页面主体并按下官方快捷键 'c'
-                    if await dialog.count() == 0 or not await dialog.is_visible():
-                        logger.info("尝试聚焦页面主体并按快捷键 'c' 唤起发帖弹窗...")
+                        # 3b. 真实鼠标坐标点击右下角
+                        if not active_composer:
+                            vp = page.viewport_size or {"width": 1280, "height": 900}
+                            await page.mouse.click(vp["width"] - 65, vp["height"] - 65)
+                            for _ in range(5):
+                                await page.wait_for_timeout(500)
+                                active_composer = await _get_open_composer()
+                                if active_composer:
+                                    break
+
+                    # 策略 4: 点击信息流右侧的小 [+] 快捷图标 (右侧中段)
+                    if not active_composer:
+                        side_fab = page.locator('svg[aria-label="New thread"], svg[aria-label="Create"]').last
+                        if await side_fab.count() > 0 and await side_fab.is_visible():
+                            try:
+                                await side_fab.click(force=True, timeout=2000)
+                            except Exception:
+                                pass
+                            for _ in range(6):
+                                await page.wait_for_timeout(500)
+                                active_composer = await _get_open_composer()
+                                if active_composer:
+                                    break
+
+                    # 策略 5: 页面聚焦并按快捷键 'c'
+                    if not active_composer:
+                        logger.info("策略 5: 尝试聚焦页面主体并按快捷键 'c' 唤起发帖界面...")
                         try:
                             await page.locator('body').click(force=True, timeout=2000)
                         except Exception:
@@ -265,11 +315,13 @@ class ThreadsPublisher:
                         await page.keyboard.press("c")
                         for _ in range(6):
                             await page.wait_for_timeout(500)
-                            if await dialog.count() > 0 and await dialog.is_visible():
+                            active_composer = await _get_open_composer()
+                            if active_composer:
                                 break
 
-                # 严格校验：发帖必须在独立的发帖弹窗 (role="dialog") 内完成，杜绝误选其他用户的评论框！
-                if await dialog.count() == 0 or not await dialog.is_visible():
+                # 最终确认发帖容器就绪
+                dialog = active_composer
+                if not dialog:
                     await page.screenshot(path="debug_open_editor_failed.png")
                     raise Exception("未能成功打开发帖弹窗，已截图 debug_open_editor_failed.png")
 
