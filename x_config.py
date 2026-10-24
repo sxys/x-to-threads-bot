@@ -46,6 +46,10 @@ class Config:
     FILTER_PERSONAL_DIARY: bool = os.getenv("FILTER_PERSONAL_DIARY", "true").lower() in ("true", "1", "yes")
     # 自定义排除关键词（以英文或中文逗号分隔，如: "林忆莲,相亲,打卡"）
     EXCLUDE_KEYWORDS: str = os.getenv("EXCLUDE_KEYWORDS", "")
+    # 主动避开自残自杀、进食障碍、暴力、性暗示、宣传烟草等管制产品的内容（严格符合 Meta/Threads 推荐规范，默认开启）
+    FILTER_RESTRICTED_CONTENT: bool = os.getenv("FILTER_RESTRICTED_CONTENT", "true").lower() in ("true", "1", "yes")
+    # 是否对选出的候选推文调用 Gemini AI 进行深度安全复核（默认开启，若未配置或异常自动平滑跳过）
+    FILTER_RESTRICTED_AI: bool = os.getenv("FILTER_RESTRICTED_AI", "false").lower() in ("true", "1", "yes")
 
     # ================== 定时任务配置 ==================
     # 每天定时执行的时间 (24小时制，每天早上 08:00)

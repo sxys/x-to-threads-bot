@@ -198,6 +198,20 @@ class TelegramListener:
                 )
                 return
 
+            # 严格内容合规检查：主动避开自残自杀、进食障碍、暴力、性暗示、宣传烟草等管制内容
+            if getattr(config, "FILTER_RESTRICTED_CONTENT", True):
+                is_restricted, reason = collector.is_restricted_content_tweet(tweet)
+                if is_restricted:
+                    warn_msg = (
+                        f"⚠️ <b>【合规拦截：检测到限制或违规内容】</b>\n"
+                        f"────────────────────────\n"
+                        f"📌 <b>拦截原因</b>: {reason}\n\n"
+                        f"💡 <i>Threads 对描绘自残自杀、暴力、性暗示或宣传烟草/管制产品等内容实行严格限流与封禁处罚。\n"
+                        f"为了保障您的 Threads 账号安全，已自动拦截该推文，未加入发布队列。</i>"
+                    )
+                    await self.send_reply(client, sender_chat, warn_msg)
+                    return
+
             # 执行最高优先级插入与后续任务顺延
             result = await QueueManager.insert_priority_task(tweet, tweet_id)
             if not result.get("ok"):

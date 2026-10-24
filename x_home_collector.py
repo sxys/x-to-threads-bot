@@ -195,6 +195,178 @@ class XHomeCollector:
 
         return False, ""
 
+    # ================== 严格内容安全合规规则库 (遵循 Threads/Meta 推荐限制规范) ==================
+    RESTRICTED_CATEGORIES = {
+        "自残、自杀与进食障碍": [
+            (r'(自杀|轻生|寻死|割腕|割脉|切腹|饮弹自尽|吞药自尽|吞药自杀|吃安眠药自杀|服毒自尽|服毒自杀|跳楼自杀|跳桥自杀|烧炭自杀|烧炭轻生|上吊自杀|上吊自尽|相约自杀|约死群)', '明确自杀/自绝/轻生词汇'),
+            (r'(不想活了|不想活下去了|活着没意思|活着太痛苦了想死|活不下去了|好想死|真的想死|准备去死|准备自尽|下辈子不来了|留下遗书|写下遗书|厌世想死)', '自杀倾向与厌世绝望言论'),
+            (r'(自残|自伤|划伤自己|用刀割自己|拿刀割手|割手腕|烟头烫自己)', '自残自伤行为'),
+            (r'(暴食症|厌食症|神经性厌食|神经性贪食|进食障碍)', '进食障碍病理词汇'),
+            (r'(催吐|催吐管|兔子管|嚼吐|锁喉催吐|插管催吐|暴食.*催吐|扣喉催吐)', '催吐及进食障碍行为'),
+        ],
+        "暴力伤害与血腥恐怖": [
+            (r'(分尸|碎尸|斩首|凌迟|肢解|活埋|剥皮|割喉|绞杀|惨遭杀害|残忍杀害|虐杀)', '极端残酷杀戮与尸体毁损'),
+            (r'(持刀砍人|持枪扫射|连环杀人|凶杀现场|灭门惨案|杀人抛尸|抛尸现场|尸块|杀人犯|杀人狂)', '恶性凶杀与持械行凶'),
+            (r'(砍人|杀人|捅死|捅伤|砍死|砍伤|枪杀|射杀|击毙|打死人|殴打致死|被活活打死)', '暴力伤亡行为'),
+            (r'(血肉模糊|开膛破肚|鲜血淋漓|头破血流|血流成河|脑浆迸裂)', '血腥伤亡视觉描写'),
+            (r'(虐猫|虐狗|虐待动物|虐杀小动物|摔死猫|烫死猫|毒杀宠物)', '虐待动物'),
+            (r'(暴打|围殴|聚众斗殴|持械斗殴|械斗|把人打残|打断腿|严重霸凌殴打|严刑拷打)', '严重身体暴力与霸凌械斗'),
+            (r'(恐怖袭击|人体炸弹|汽车炸弹|引爆炸弹|劫持人质|无差别砍人|无差别杀人|报复社会.*杀人)', '恐怖袭击与极端恶性暴力'),
+        ],
+        "性暗示与色情违规": [
+            (r'(约炮|同城约|招嫖|嫖娼|卖淫|援交|兼职上门|包养|找金主|外围女|外围模特|楼凤|品茶修车|出台陪睡|莞式服务)', '性交易与约炮招嫖'),
+            (r'(黄推|福利姬|门槛群|微密圈|onlyfans|fansly|91pron|51吃瓜视频|汤不热)', '色情平台与黄推引流'),
+            (r'(看片[+＋➕]v|看片加v|看片联系|进群看片|电报看片|tg看片|私信看完整|主页置顶看视频|推特福利|成人无码|成人网站|番号推荐|三级片|av女优)', '色情资源与看片引流'),
+            (r'(露点|露胸|露逼|露屌|巨乳福利|爆乳福利|骚逼|性奴|调教|sm调教|捆绑调教|露出癖|野外露出|偷拍裙底|偷窥洗澡|针孔偷拍)', '露骨性暗示与性癖调教'),
+            (r'(做爱|性交|啪啪啪|打炮|口交|深喉|颜射|乳交|中出|内射|后入|潮吹|自慰|手淫|打飞机|飞机杯|裸聊|裸照|裸体福利|私密私照|艳照|原味内裤|原味丝袜)', '露骨性行为与私密暴露'),
+        ],
+        "宣传烟草与管制产品": [
+            (r'(电子烟|雾化器|烟弹|悦刻|relx|柚子yooz|魔笛mote|尼古丁盐|一次性电子烟|电子烟代购|电子烟批发|电子烟现货|烟油推荐|vape)', '电子烟及雾化产品宣传'),
+            (r'(香烟代购|香烟批发|外烟代购|专柜正品香烟|免税香烟|细支香烟|雪茄代购|卷烟批发|低价香烟|买烟加v|抽烟推荐|正品烟草)', '烟草销售与代购推广'),
+            (r'(大麻|thc|cbd烟油|冰毒|海洛因|可卡因|摇头丸|k粉|氯胺酮|麻古|依托咪酯|上头电子烟|笑气|吸毒|贩毒|违禁药物|迷魂药|听话水|乖乖水|迷奸药|三唑仑)', '毒品与精神管制药品'),
+        ]
+    }
+
+    @classmethod
+    def is_restricted_content_tweet(cls, tweet) -> Tuple[bool, str]:
+        """
+        严格判断推文是否包含 Meta / Threads 推荐指南中明确限制推荐的内容：
+        1. X 官方标记的敏感媒体 (possibly_sensitive)
+        2. 避开描绘或讨论自残、自杀、进食障碍的内容
+        3. 避开描绘或讨论暴力的内容
+        4. 避开性暗示内容与色情引流
+        5. 避开宣传烟草、电子烟等管制产品的内容
+        """
+        if not getattr(config, "FILTER_RESTRICTED_CONTENT", True):
+            return False, ""
+
+        # 检查原推、转推与引用推
+        sub_tweets = [tweet]
+        retweeted = getattr(tweet, "retweeted_tweet", None)
+        if retweeted:
+            sub_tweets.append(retweeted)
+        quoted = getattr(tweet, "quoted_tweet", None)
+        if quoted:
+            sub_tweets.append(quoted)
+
+        # 1. 检查 X 平台原生敏感媒体标记 (possibly_sensitive)
+        for st in sub_tweets:
+            is_sens = getattr(st, "possibly_sensitive", False)
+            if not is_sens and hasattr(st, "_legacy") and isinstance(st._legacy, dict):
+                is_sens = st._legacy.get("possibly_sensitive", False)
+            if not is_sens and hasattr(st, "_data") and isinstance(st._data, dict):
+                is_sens = st._data.get("possibly_sensitive", False)
+            if is_sens:
+                return True, "X官方标记敏感媒体内容 (possibly_sensitive=True)"
+
+        # 2. 汇集所有正文文本
+        texts = []
+        for st in sub_tweets:
+            t = getattr(st, "text", "") or ""
+            ft = getattr(st, "full_text", "") or t
+            if ft:
+                texts.append(ft)
+            elif t:
+                texts.append(t)
+        combined_text = "\n".join(texts)
+        if not combined_text.strip():
+            return False, ""
+
+        # 3. 逐项遍历四大合规违规正则库
+        for cat_name, patterns in cls.RESTRICTED_CATEGORIES.items():
+            for pattern, desc in patterns:
+                m = re.search(pattern, combined_text, re.IGNORECASE)
+                if m:
+                    return True, f"命中[{cat_name}]限制: {desc} (匹配: '{m.group()}')"
+
+        return False, ""
+
+    @classmethod
+    async def ai_verify_restricted_content(cls, candidates: List[Dict[str, Any]], target_count: int) -> List[Dict[str, Any]]:
+        """
+        可选的 Gemini AI 深度安全合规复审：
+        对规则初筛通过的高分候选帖子进行双重确认，剔除隐晦的自残自杀、暴力、性暗示或烟草毒品宣传。
+        若未配置有效 Key 或网络超时/429，自动平滑跳过，保证核心抓取流程不受阻断。
+        """
+        if not getattr(config, "FILTER_RESTRICTED_AI", False):
+            return candidates[:target_count]
+
+        api_key = getattr(config, "GEMINI_API_KEY", "")
+        if not api_key or api_key.startswith("your_") or len(api_key.strip()) < 8:
+            return candidates[:target_count]
+
+        if not candidates:
+            return []
+
+        logger.info(f"🤖 正在调用 Gemini AI 对前 {min(len(candidates), target_count * 2)} 条候选推文进行深度合规安全复核...")
+        proxy = config.PROXY if config.PROXY and config.PROXY.strip() else None
+        model = getattr(config, "GEMINI_MODEL", "gemini-2.5-flash-lite") or "gemini-2.5-flash-lite"
+        if "1.5" in model:
+            model = "gemini-2.5-flash"
+
+        check_pool = candidates[:target_count * 2]
+        review_items = []
+        for idx, item in enumerate(check_pool):
+            raw_t = item.get("full_text") or item.get("text") or ""
+            snippet = raw_t.replace("\n", " ").strip()[:180]
+            review_items.append(f"[{idx}] {snippet}")
+
+        prompt = (
+            "你是一名严格的社交媒体合规安全审核员。请依照 Threads / Meta 推荐限制标准，审查以下推文文案，判断是否触犯以下任一限制红线：\n"
+            "1. 自残、自杀、进食障碍（描绘或讨论轻生、割腕、绝望厌世、催吐、暴食厌食等）\n"
+            "2. 暴力内容（描绘或讨论血腥、凶杀、打人、虐杀动物、恐怖主义等）\n"
+            "3. 性暗示内容（性交易、黄推、看片引流、露骨性暗示、涉黄等）\n"
+            "4. 宣传烟草等管制产品（宣传或推销电子烟、香烟、大麻毒品及精神管制药物等）\n\n"
+            "待审核推文列表：\n"
+            + "\n".join(review_items) + "\n\n"
+            "【输出要求】：\n"
+            "请以纯 JSON 数组格式返回每条推文审查结果：\n"
+            '[{"id": 0, "safe": true, "reason": ""}, {"id": 1, "safe": false, "reason": "违规原因"}]'
+        )
+
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 800,
+                "responseMimeType": "application/json"
+            }
+        }
+
+        candidate_models = ["gemini-2.5-flash-lite", model, "gemini-2.5-flash"]
+        try:
+            async with httpx.AsyncClient(proxy=proxy, timeout=15.0) as client:
+                for cur_model in candidate_models:
+                    url = f"https://generativelanguage.googleapis.com/v1beta/models/{cur_model}:generateContent?key={api_key.strip()}"
+                    resp = await client.post(url, json=payload)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        candidates_resp = data.get("candidates", [])
+                        if candidates_resp:
+                            parts = candidates_resp[0].get("content", {}).get("parts", [])
+                            text_parts = [p.get("text", "") for p in parts if "text" in p and not p.get("thought", False)]
+                            if text_parts:
+                                results = json.loads(text_parts[0])
+                                unsafe_ids = set()
+                                for r in results:
+                                    if not r.get("safe", True):
+                                        unsafe_ids.add(r.get("id"))
+                                        logger.info(f"🚫 [AI合规复检拦截] #{check_pool[r.get('id')]['id']}: {r.get('reason')} - {check_pool[r.get('id')]['text'][:40]}...")
+                                
+                                safe_candidates = [c for i, c in enumerate(check_pool) if i not in unsafe_ids]
+                                # 补齐剩余候选
+                                safe_candidates.extend(candidates[len(check_pool):])
+                                logger.info(f"✅ Gemini AI 安全复核完成：放行 {len(safe_candidates)} 条，拦截 {len(unsafe_ids)} 条。")
+                                return safe_candidates[:target_count]
+                    elif resp.status_code in (404, 429):
+                        continue
+                    else:
+                        break
+        except Exception as e:
+            logger.warning(f"⚠️ Gemini AI 合规复检跳过或网络异常 ({e})，将直接使用规则过滤结果。")
+
+        return candidates[:target_count]
+
     @staticmethod
     def _normalize_text_fingerprint(text: str) -> str:
         """生成推文核心文案指纹，去除 URL、标点及空格，用于内容级查重"""
@@ -318,9 +490,10 @@ class XHomeCollector:
         filtered_count = 0
         ad_filtered_count = 0
         diary_filtered_count = 0
+        restricted_filtered_count = 0
 
         def process_batch(tweets_batch):
-            nonlocal all_tweets, seen_ids, duplicate_filtered_count, filtered_count, ad_filtered_count, diary_filtered_count
+            nonlocal all_tweets, seen_ids, duplicate_filtered_count, filtered_count, ad_filtered_count, diary_filtered_count, restricted_filtered_count
             if not tweets_batch:
                 return
             for tweet in tweets_batch:
@@ -354,6 +527,16 @@ class XHomeCollector:
                     logger.info(f"🚫 [已跳过个人日记/私事推文] @{s_name}: {diary_reason} - {t_snippet}...")
                     continue
 
+                # 排除自残自杀、进食障碍、暴力、性暗示、宣传烟草等管制内容（严格遵循 Threads/Meta 推荐合规指南）
+                is_restricted, restricted_reason = self.is_restricted_content_tweet(tweet)
+                if is_restricted:
+                    restricted_filtered_count += 1
+                    user_obj = getattr(tweet, "user", None)
+                    s_name = getattr(user_obj, "screen_name", "user") if user_obj else "user"
+                    t_snippet = (getattr(tweet, "text", "") or "").replace("\n", " ")[:35]
+                    logger.info(f"🚫 [已跳过限制合规推文] @{s_name}: {restricted_reason} - {t_snippet}...")
+                    continue
+
                 user = getattr(tweet, "user", None)
                 screen_name = getattr(user, "screen_name", "i") if user else "i"
                 user_name = getattr(user, "name", "Twitter User") if user else "Twitter User"
@@ -376,7 +559,7 @@ class XHomeCollector:
                 })
 
         process_batch(result)
-        logger.info(f"第 1 页抓取完成，当前符合要求的全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count}, 过滤个人日记: {diary_filtered_count})")
+        logger.info(f"第 1 页抓取完成，当前符合要求的全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count}, 过滤个人日记: {diary_filtered_count}, 过滤限制违规: {restricted_filtered_count})")
 
         # 异步翻页收集更多中文帖子
         for page in range(2, max_pages + 1):
@@ -391,18 +574,23 @@ class XHomeCollector:
                     logger.info("无更多主页数据，停止翻页。")
                     break
                 process_batch(result)
-                logger.info(f"第 {page} 页抓取完成，累计全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count}, 过滤个人日记: {diary_filtered_count})")
+                logger.info(f"第 {page} 页抓取完成，累计全新中文帖子: {len(all_tweets)} (过滤历史重复: {duplicate_filtered_count}, 过滤非中文: {filtered_count}, 过滤广告: {ad_filtered_count}, 过滤个人日记: {diary_filtered_count}, 过滤限制违规: {restricted_filtered_count})")
             except Exception as e:
                 logger.warning(f"第 {page} 页翻页抓取出现异常 ({e})，停止翻页。")
                 break
 
         if not all_tweets:
-            logger.warning("未能从主页中获取到符合原生中文要求的有效推文。")
+            logger.warning("未能从主页中获取到符合原生中文与安全合规要求的有效推文。")
             return []
 
         # 按热度降序排序
         all_tweets.sort(key=lambda x: x["score"], reverse=True)
-        top_list = all_tweets[:config.TOP_LIMIT]
+
+        # 若开启了 AI 安全合规复审，对排名前列候选进行深度复核
+        if getattr(config, "FILTER_RESTRICTED_AI", False):
+            top_list = await self.ai_verify_restricted_content(all_tweets, config.TOP_LIMIT)
+        else:
+            top_list = all_tweets[:config.TOP_LIMIT]
 
         logger.info(f"排序完成！已选出热度前 {len(top_list)} 条纯中文帖子（最高热度分: {top_list[0]['score']}）。")
 
